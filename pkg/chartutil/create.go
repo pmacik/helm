@@ -26,8 +26,8 @@ import (
 	"github.com/pkg/errors"
 	"sigs.k8s.io/yaml"
 
-	"helm.sh/helm/pkg/chart"
-	"helm.sh/helm/pkg/chart/loader"
+	"helm.sh/helm/v3/pkg/chart"
+	"helm.sh/helm/v3/pkg/chart/loader"
 )
 
 const (
@@ -35,23 +35,33 @@ const (
 	ChartfileName = "Chart.yaml"
 	// ValuesfileName is the default values file name.
 	ValuesfileName = "values.yaml"
+	// SchemafileName is the default values schema file name.
+	SchemafileName = "values.schema.json"
 	// TemplatesDir is the relative directory name for templates.
 	TemplatesDir = "templates"
 	// ChartsDir is the relative directory name for charts dependencies.
 	ChartsDir = "charts"
+	// TemplatesTestsDir is the relative directory name for tests.
+	TemplatesTestsDir = TemplatesDir + sep + "tests"
 	// IgnorefileName is the name of the Helm ignore file.
 	IgnorefileName = ".helmignore"
 	// IngressFileName is the name of the example ingress file.
-	IngressFileName = "ingress.yaml"
+	IngressFileName = TemplatesDir + sep + "ingress.yaml"
 	// DeploymentName is the name of the example deployment file.
-	DeploymentName = "deployment.yaml"
+	DeploymentName = TemplatesDir + sep + "deployment.yaml"
 	// ServiceName is the name of the example service file.
-	ServiceName = "service.yaml"
+	ServiceName = TemplatesDir + sep + "service.yaml"
+	// ServiceAccountName is the name of the example serviceaccount file.
+	ServiceAccountName = TemplatesDir + sep + "serviceaccount.yaml"
 	// NotesName is the name of the example NOTES.txt file.
-	NotesName = "NOTES.txt"
-	// HelpersName is the name of the example NOTES.txt file.
-	HelpersName = "_helpers.tpl"
+	NotesName = TemplatesDir + sep + "NOTES.txt"
+	// HelpersName is the name of the example helpers file.
+	HelpersName = TemplatesDir + sep + "_helpers.tpl"
+	// TestConnectionName is the name of the example test file.
+	TestConnectionName = TemplatesTestsDir + sep + "test-connection.yaml"
 )
+
+const sep = string(filepath.Separator)
 
 const defaultChartfile = `apiVersion: v2
 name: %s
@@ -86,8 +96,27 @@ image:
   repository: nginx
   pullPolicy: IfNotPresent
 
+imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name:
+
+podSecurityContext: {}
+  # fsGroup: 2000
+
+securityContext: {}
+  # capabilities:
+  #   drop:
+  #   - ALL
+  # readOnlyRootFilesystem: true
+  # runAsNonRoot: true
+  # runAsUser: 1000
 
 service:
   type: ClusterIP
@@ -101,7 +130,6 @@ ingress:
   hosts:
     - host: chart-example.local
       paths: []
-
   tls: []
   #  - secretName: chart-example-tls
   #    hosts:
@@ -113,11 +141,11 @@ resources: {}
   # resources, such as Minikube. If you do want to specify resources, uncomment the following
   # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
   # limits:
-  #  cpu: 100m
-  #  memory: 128Mi
+  #   cpu: 100m
+  #   memory: 128Mi
   # requests:
-  #  cpu: 100m
-  #  memory: 128Mi
+  #   cpu: 100m
+  #   memory: 128Mi
 
 nodeSelector: {}
 
@@ -147,17 +175,22 @@ const defaultIgnore = `# Patterns to ignore when building packages.
 .project
 .idea/
 *.tmproj
+.vscode/
 `
 
 const defaultIngress = `{{- if .Values.ingress.enabled -}}
 {{- $fullName := include "<CHARTNAME>.fullname" . -}}
 {{- $svcPort := .Values.service.port -}}
+{{- if semverCompare ">=1.14-0" .Capabilities.KubeVersion.GitVersion -}}
 apiVersion: networking.k8s.io/v1beta1
+{{- else -}}
+apiVersion: extensions/v1beta1
+{{- end }}
 kind: Ingress
 metadata:
   name: {{ $fullName }}
   labels:
-{{ include "<CHARTNAME>.labels" . | indent 4 }}
+    {{- include "<CHARTNAME>.labels" . | nindent 4 }}
   {{- with .Values.ingress.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
@@ -188,26 +221,33 @@ spec:
 {{- end }}
 `
 
-const defaultDeployment = `apiVersion: apps/v1beta2
+const defaultDeployment = `apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ template "<CHARTNAME>.fullname" . }}
+  name: {{ include "<CHARTNAME>.fullname" . }}
   labels:
-{{ include "<CHARTNAME>.labels" . | indent 4 }}
+    {{- include "<CHARTNAME>.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ include "<CHARTNAME>.name" . }}
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      {{- include "<CHARTNAME>.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: {{ include "<CHARTNAME>.name" . }}
-        app.kubernetes.io/instance: {{ .Release.Name }}
+        {{- include "<CHARTNAME>.selectorLabels" . | nindent 8 }}
     spec:
+    {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+      serviceAccountName: {{ include "<CHARTNAME>.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ .Values.image.repository }}:{{ .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
@@ -223,27 +263,27 @@ spec:
               path: /
               port: http
           resources:
-{{ toYaml .Values.resources | indent 12 }}
-    {{- with .Values.nodeSelector }}
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
       nodeSelector:
-{{ toYaml . | indent 8 }}
-    {{- end }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     {{- with .Values.affinity }}
       affinity:
-{{ toYaml . | indent 8 }}
+        {{- toYaml . | nindent 8 }}
     {{- end }}
     {{- with .Values.tolerations }}
       tolerations:
-{{ toYaml . | indent 8 }}
+        {{- toYaml . | nindent 8 }}
     {{- end }}
 `
 
 const defaultService = `apiVersion: v1
 kind: Service
 metadata:
-  name: {{ template "<CHARTNAME>.fullname" . }}
+  name: {{ include "<CHARTNAME>.fullname" . }}
   labels:
-{{ include "<CHARTNAME>.labels" . | indent 4 }}
+    {{- include "<CHARTNAME>.labels" . | nindent 4 }}
 spec:
   type: {{ .Values.service.type }}
   ports:
@@ -252,8 +292,17 @@ spec:
       protocol: TCP
       name: http
   selector:
-    app.kubernetes.io/name: {{ include "<CHARTNAME>.name" . }}
-    app.kubernetes.io/instance: {{ .Release.Name }}
+    {{- include "<CHARTNAME>.selectorLabels" . | nindent 4 }}
+`
+
+const defaultServiceAccount = `{{- if .Values.serviceAccount.create -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "<CHARTNAME>.serviceAccountName" . }}
+  labels:
+{{ include "<CHARTNAME>.labels" . | nindent 4 }}
+{{- end -}}
 `
 
 const defaultNotes = `1. Get the application URL by running these commands:
@@ -264,16 +313,16 @@ const defaultNotes = `1. Get the application URL by running these commands:
   {{- end }}
 {{- end }}
 {{- else if contains "NodePort" .Values.service.type }}
-  export NODE_PORT=$(kubectl get -o jsonpath="{.spec.ports[0].nodePort}" services {{ template "<CHARTNAME>.fullname" . }})
-  export NODE_IP=$(kubectl get nodes -o jsonpath="{.items[0].status.addresses[0].address}")
+  export NODE_PORT=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}" services {{ include "<CHARTNAME>.fullname" . }})
+  export NODE_IP=$(kubectl get nodes --namespace {{ .Release.Namespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
   echo http://$NODE_IP:$NODE_PORT
 {{- else if contains "LoadBalancer" .Values.service.type }}
      NOTE: It may take a few minutes for the LoadBalancer IP to be available.
-           You can watch the status of by running 'kubectl get svc -w {{ template "<CHARTNAME>.fullname" . }}'
-  export SERVICE_IP=$(kubectl get svc {{ template "<CHARTNAME>.fullname" . }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+           You can watch the status of by running 'kubectl get --namespace {{ .Release.Namespace }} svc -w {{ include "<CHARTNAME>.fullname" . }}'
+  export SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "<CHARTNAME>.fullname" . }} --template "{{"{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}"}}")
   echo http://$SERVICE_IP:{{ .Values.service.port }}
 {{- else if contains "ClusterIP" .Values.service.type }}
-  export POD_NAME=$(kubectl get pods -l "app={{ template "<CHARTNAME>.name" . }},release={{ .Release.Name }}" -o jsonpath="{.items[0].metadata.name}")
+  export POD_NAME=$(kubectl get pods --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "<CHARTNAME>.name" . }},app.kubernetes.io/instance={{ .Release.Name }}" -o jsonpath="{.items[0].metadata.name}")
   echo "Visit http://127.0.0.1:8080 to use your application"
   kubectl port-forward $POD_NAME 8080:80
 {{- end }}
@@ -316,14 +365,49 @@ Create chart name and version as used by the chart label.
 Common labels
 */}}
 {{- define "<CHARTNAME>.labels" -}}
-app.kubernetes.io/name: {{ include "<CHARTNAME>.name" . }}
 helm.sh/chart: {{ include "<CHARTNAME>.chart" . }}
-app.kubernetes.io/instance: {{ .Release.Name }}
+{{ include "<CHARTNAME>.selectorLabels" . }}
 {{- if .Chart.AppVersion }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
+
+{{/*
+Selector labels
+*/}}
+{{- define "<CHARTNAME>.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "<CHARTNAME>.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end -}}
+
+{{/*
+Create the name of the service account to use
+*/}}
+{{- define "<CHARTNAME>.serviceAccountName" -}}
+{{- if .Values.serviceAccount.create -}}
+    {{ default (include "<CHARTNAME>.fullname" .) .Values.serviceAccount.name }}
+{{- else -}}
+    {{ default "default" .Values.serviceAccount.name }}
+{{- end -}}
+{{- end -}}
+`
+
+const defaultTestConnection = `apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "<CHARTNAME>.fullname" . }}-test-connection"
+  labels:
+{{ include "<CHARTNAME>.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test-success
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args:  ['{{ include "<CHARTNAME>.fullname" . }}:{{ .Values.service.port }}']
+  restartPolicy: Never
 `
 
 // CreateFrom creates a new chart, but scaffolds it from the src chart.
@@ -345,12 +429,12 @@ func CreateFrom(chartfile *chart.Metadata, dest, src string) error {
 	schart.Templates = updatedTemplates
 	b, err := yaml.Marshal(schart.Values)
 	if err != nil {
-		return err
+		return errors.Wrap(err, "reading values file")
 	}
 
 	var m map[string]interface{}
 	if err := yaml.Unmarshal(transform(string(b), schart.Name()), &m); err != nil {
-		return err
+		return errors.Wrap(err, "transforming values file")
 	}
 	schart.Values = m
 
@@ -386,15 +470,6 @@ func Create(name, dir string) (string, error) {
 	if fi, err := os.Stat(cdir); err == nil && !fi.IsDir() {
 		return cdir, errors.Errorf("file %s already exists and is not a directory", cdir)
 	}
-	if err := os.MkdirAll(cdir, 0755); err != nil {
-		return cdir, err
-	}
-
-	for _, d := range []string{TemplatesDir, ChartsDir} {
-		if err := os.MkdirAll(filepath.Join(cdir, d), 0755); err != nil {
-			return cdir, err
-		}
-	}
 
 	files := []struct {
 		path    string
@@ -417,28 +492,38 @@ func Create(name, dir string) (string, error) {
 		},
 		{
 			// ingress.yaml
-			path:    filepath.Join(cdir, TemplatesDir, IngressFileName),
+			path:    filepath.Join(cdir, IngressFileName),
 			content: transform(defaultIngress, name),
 		},
 		{
 			// deployment.yaml
-			path:    filepath.Join(cdir, TemplatesDir, DeploymentName),
+			path:    filepath.Join(cdir, DeploymentName),
 			content: transform(defaultDeployment, name),
 		},
 		{
 			// service.yaml
-			path:    filepath.Join(cdir, TemplatesDir, ServiceName),
+			path:    filepath.Join(cdir, ServiceName),
 			content: transform(defaultService, name),
 		},
 		{
+			// serviceaccount.yaml
+			path:    filepath.Join(cdir, ServiceAccountName),
+			content: transform(defaultServiceAccount, name),
+		},
+		{
 			// NOTES.txt
-			path:    filepath.Join(cdir, TemplatesDir, NotesName),
+			path:    filepath.Join(cdir, NotesName),
 			content: transform(defaultNotes, name),
 		},
 		{
 			// _helpers.tpl
-			path:    filepath.Join(cdir, TemplatesDir, HelpersName),
+			path:    filepath.Join(cdir, HelpersName),
 			content: transform(defaultHelpers, name),
+		},
+		{
+			// test-connection.yaml
+			path:    filepath.Join(cdir, TestConnectionName),
+			content: transform(defaultTestConnection, name),
 		},
 	}
 
@@ -447,9 +532,13 @@ func Create(name, dir string) (string, error) {
 			// File exists and is okay. Skip it.
 			continue
 		}
-		if err := ioutil.WriteFile(file.path, file.content, 0644); err != nil {
+		if err := writeFile(file.path, file.content); err != nil {
 			return cdir, err
 		}
+	}
+	// Need to add the ChartsDir explicitly as it does not contain any file OOTB
+	if err := os.MkdirAll(filepath.Join(cdir, ChartsDir), 0755); err != nil {
+		return cdir, err
 	}
 	return cdir, nil
 }
@@ -458,4 +547,11 @@ func Create(name, dir string) (string, error) {
 // a given key with the replacement string
 func transform(src, replacement string) []byte {
 	return []byte(strings.ReplaceAll(src, "<CHARTNAME>", replacement))
+}
+
+func writeFile(name string, content []byte) error {
+	if err := os.MkdirAll(filepath.Dir(name), 0755); err != nil {
+		return err
+	}
+	return ioutil.WriteFile(name, content, 0644)
 }

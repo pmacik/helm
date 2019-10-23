@@ -23,24 +23,26 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Masterminds/semver"
+	"github.com/Masterminds/semver/v3"
 	"github.com/pkg/errors"
 
-	"helm.sh/helm/pkg/chart"
-	"helm.sh/helm/pkg/helmpath"
-	"helm.sh/helm/pkg/provenance"
-	"helm.sh/helm/pkg/repo"
+	"helm.sh/helm/v3/pkg/chart"
+	"helm.sh/helm/v3/pkg/helmpath"
+	"helm.sh/helm/v3/pkg/provenance"
+	"helm.sh/helm/v3/pkg/repo"
 )
 
 // Resolver resolves dependencies from semantic version ranges to a particular version.
 type Resolver struct {
 	chartpath string
+	cachepath string
 }
 
 // New creates a new resolver for a given chart and a given helm home.
-func New(chartpath string) *Resolver {
+func New(chartpath, cachepath string) *Resolver {
 	return &Resolver{
 		chartpath: chartpath,
+		cachepath: cachepath,
 	}
 }
 
@@ -51,6 +53,19 @@ func (r *Resolver) Resolve(reqs []*chart.Dependency, repoNames map[string]string
 	locked := make([]*chart.Dependency, len(reqs))
 	missing := []string{}
 	for i, d := range reqs {
+		if d.Repository == "" {
+			// Local chart subfolder
+			if _, err := GetLocalPath(filepath.Join("charts", d.Name), r.chartpath); err != nil {
+				return nil, err
+			}
+
+			locked[i] = &chart.Dependency{
+				Name:       d.Name,
+				Repository: "",
+				Version:    d.Version,
+			}
+			continue
+		}
 		if strings.HasPrefix(d.Repository, "file://") {
 
 			if _, err := GetLocalPath(d.Repository, r.chartpath); err != nil {
@@ -69,9 +84,20 @@ func (r *Resolver) Resolve(reqs []*chart.Dependency, repoNames map[string]string
 			return nil, errors.Wrapf(err, "dependency %q has an invalid version/constraint format", d.Name)
 		}
 
-		repoIndex, err := repo.LoadIndexFile(helmpath.CacheIndex(repoNames[d.Name]))
+		repoName := repoNames[d.Name]
+		// if the repository was not defined, but the dependency defines a repository url, bypass the cache
+		if repoName == "" && d.Repository != "" {
+			locked[i] = &chart.Dependency{
+				Name:       d.Name,
+				Repository: d.Repository,
+				Version:    d.Version,
+			}
+			continue
+		}
+
+		repoIndex, err := repo.LoadIndexFile(filepath.Join(r.cachepath, helmpath.CacheIndexFile(repoName)))
 		if err != nil {
-			return nil, errors.Wrap(err, "no cached repo found. (try 'helm repo update')")
+			return nil, errors.Wrapf(err, "no cached repository for %s found. (try 'helm repo update')", repoName)
 		}
 
 		vs, ok := repoIndex.Entries[d.Name]

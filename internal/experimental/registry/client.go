@@ -14,14 +14,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package registry // import "helm.sh/helm/internal/experimental/registry"
+package registry // import "helm.sh/helm/v3/internal/experimental/registry"
 
 import (
 	"context"
 	"fmt"
 	"io"
 	"io/ioutil"
-	"path/filepath"
 	"sort"
 
 	auth "github.com/deislabs/oras/pkg/auth/docker"
@@ -30,8 +29,8 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
 
-	"helm.sh/helm/pkg/chart"
-	"helm.sh/helm/pkg/helmpath"
+	"helm.sh/helm/v3/pkg/chart"
+	"helm.sh/helm/v3/pkg/helmpath"
 )
 
 const (
@@ -60,7 +59,7 @@ func NewClient(opts ...ClientOption) (*Client, error) {
 	}
 	// set defaults if fields are missing
 	if client.authorizer == nil {
-		credentialsFile := filepath.Join(helmpath.Registry(), CredentialsFileBasename)
+		credentialsFile := helmpath.CachePath("registry", CredentialsFileBasename)
 		authClient, err := auth.NewClient(credentialsFile)
 		if err != nil {
 			return nil, err
@@ -82,7 +81,7 @@ func NewClient(opts ...ClientOption) (*Client, error) {
 		cache, err := NewCache(
 			CacheOptDebug(client.debug),
 			CacheOptWriter(client.out),
-			CacheOptRoot(filepath.Join(helmpath.Registry(), CacheRootDir)),
+			CacheOptRoot(helmpath.CachePath("registry", CacheRootDir)),
 		)
 		if err != nil {
 			return nil, err
@@ -93,8 +92,8 @@ func NewClient(opts ...ClientOption) (*Client, error) {
 }
 
 // Login logs into a registry
-func (c *Client) Login(hostname string, username string, password string) error {
-	err := c.authorizer.Login(ctx(c.out, c.debug), hostname, username, password)
+func (c *Client) Login(hostname string, username string, password string, insecure bool) error {
+	err := c.authorizer.Login(ctx(c.out, c.debug), hostname, username, password, insecure)
 	if err != nil {
 		return err
 	}

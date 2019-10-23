@@ -21,10 +21,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"helm.sh/helm/cmd/helm/require"
-	"helm.sh/helm/pkg/action"
-	"helm.sh/helm/pkg/downloader"
-	"helm.sh/helm/pkg/getter"
+	"helm.sh/helm/v3/cmd/helm/require"
+	"helm.sh/helm/v3/pkg/action"
+	"helm.sh/helm/v3/pkg/downloader"
+	"helm.sh/helm/v3/pkg/getter"
 )
 
 const dependencyUpDesc = `
@@ -58,17 +58,17 @@ func newDependencyUpdateCmd(out io.Writer) *cobra.Command {
 				chartpath = filepath.Clean(args[0])
 			}
 			man := &downloader.Manager{
-				Out:        out,
-				ChartPath:  chartpath,
-				Keyring:    client.Keyring,
-				SkipUpdate: client.SkipRefresh,
-				Getters:    getter.All(settings),
+				Out:              out,
+				ChartPath:        chartpath,
+				Keyring:          client.Keyring,
+				SkipUpdate:       client.SkipRefresh,
+				Getters:          getter.All(settings),
+				RepositoryConfig: settings.RepositoryConfig,
+				RepositoryCache:  settings.RepositoryCache,
+				Debug:            settings.Debug,
 			}
 			if client.Verify {
 				man.Verify = downloader.VerifyAlways
-			}
-			if settings.Debug {
-				man.Debug = true
 			}
 			return man.Update()
 		},

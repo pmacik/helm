@@ -19,19 +19,24 @@ package main
 import (
 	"testing"
 
-	"helm.sh/helm/pkg/release"
+	"helm.sh/helm/v3/pkg/release"
 )
 
 func TestGetCmd(t *testing.T) {
 	tests := []cmdTestCase{{
-		name:   "get with a release",
-		cmd:    "get thomas-guide",
+		name:   "get all with a release",
+		cmd:    "get all thomas-guide",
 		golden: "output/get-release.txt",
 		rels:   []*release.Release{release.Mock(&release.MockReleaseOptions{Name: "thomas-guide"})},
 	}, {
-		name:      "get requires release name arg",
-		cmd:       "get",
-		golden:    "output/get-no-args.txt",
+		name:   "get all with a formatted release",
+		cmd:    "get all elevated-turkey --template {{.Release.Chart.Metadata.Version}}",
+		golden: "output/get-release-template.txt",
+		rels:   []*release.Release{release.Mock(&release.MockReleaseOptions{Name: "elevated-turkey"})},
+	}, {
+		name:      "get all requires release name arg",
+		cmd:       "get all",
+		golden:    "output/get-all-no-args.txt",
 		wantError: true,
 	}}
 	runTestCmd(t, tests)

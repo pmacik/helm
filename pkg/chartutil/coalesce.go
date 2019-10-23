@@ -19,9 +19,10 @@ package chartutil
 import (
 	"log"
 
+	"github.com/mitchellh/copystructure"
 	"github.com/pkg/errors"
 
-	"helm.sh/helm/pkg/chart"
+	"helm.sh/helm/v3/pkg/chart"
 )
 
 // CoalesceValues coalesces all of the values in a chart (and its subcharts).
@@ -34,13 +35,22 @@ import (
 //	- A chart has access to all of the variables for it, as well as all of
 //		the values destined for its dependencies.
 func CoalesceValues(chrt *chart.Chart, vals map[string]interface{}) (Values, error) {
-	if vals == nil {
-		vals = make(map[string]interface{})
-	}
-	if _, err := coalesce(chrt, vals); err != nil {
+	// create a copy of vals and then pass it to coalesce
+	// and coalesceDeps, as both will mutate the passed values
+	v, err := copystructure.Copy(vals)
+	if err != nil {
 		return vals, err
 	}
-	return coalesceDeps(chrt, vals)
+
+	valsCopy := v.(map[string]interface{})
+	// if we have an empty map, make sure it is initialized
+	if valsCopy == nil {
+		valsCopy = make(map[string]interface{})
+	}
+	if _, err := coalesce(chrt, valsCopy); err != nil {
+		return valsCopy, err
+	}
+	return coalesceDeps(chrt, valsCopy)
 }
 
 // coalesce coalesces the dest values and the chart values, giving priority to the dest values.

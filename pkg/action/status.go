@@ -17,7 +17,7 @@ limitations under the License.
 package action
 
 import (
-	"helm.sh/helm/pkg/release"
+	"helm.sh/helm/v3/pkg/release"
 )
 
 // Status is the action for checking the deployment status of releases.
@@ -26,8 +26,7 @@ import (
 type Status struct {
 	cfg *Configuration
 
-	Version      int
-	OutputFormat string
+	Version int
 }
 
 // NewStatus creates a new Status object with the given configuration.
@@ -39,5 +38,9 @@ func NewStatus(cfg *Configuration) *Status {
 
 // Run executes 'helm status' against the given release.
 func (s *Status) Run(name string) (*release.Release, error) {
+	if err := s.cfg.KubeClient.IsReachable(); err != nil {
+		return nil, err
+	}
+
 	return s.cfg.releaseContent(name, s.Version)
 }

@@ -19,16 +19,18 @@ package action
 import (
 	"bytes"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/pkg/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/cli-runtime/pkg/resource"
 
-	"helm.sh/helm/pkg/chart"
-	"helm.sh/helm/pkg/chartutil"
-	"helm.sh/helm/pkg/kube"
-	"helm.sh/helm/pkg/release"
-	"helm.sh/helm/pkg/releaseutil"
+	"helm.sh/helm/v3/pkg/chart"
+	"helm.sh/helm/v3/pkg/chartutil"
+	"helm.sh/helm/v3/pkg/kube"
+	"helm.sh/helm/v3/pkg/release"
+	"helm.sh/helm/v3/pkg/releaseutil"
 )
 
 // Upgrade is the action for upgrading releases.
@@ -52,8 +54,10 @@ type Upgrade struct {
 	// Recreate will (if true) recreate pods after a rollback.
 	Recreate bool
 	// MaxHistory limits the maximum number of revisions saved per release
-	MaxHistory int
-	Atomic     bool
+	MaxHistory    int
+	Atomic        bool
+	CleanupOnFail bool
+	SubNotes      bool
 }
 
 // NewUpgrade creates a new Upgrade object with the given configuration.
@@ -65,10 +69,6 @@ func NewUpgrade(cfg *Configuration) *Upgrade {
 
 // Run executes the upgrade on the given release.
 func (u *Upgrade) Run(name string, chart *chart.Chart, vals map[string]interface{}) (*release.Release, error) {
-	if err := chartutil.ProcessDependencies(chart, vals); err != nil {
-		return nil, err
-	}
-
 	// Make sure if Atomic is set, that wait is set as well. This makes it so
 	// the user doesn't have to specify both
 	u.Wait = u.Wait || u.Atomic
@@ -83,13 +83,6 @@ func (u *Upgrade) Run(name string, chart *chart.Chart, vals map[string]interface
 	}
 
 	u.cfg.Releases.MaxHistory = u.MaxHistory
-
-	if !u.DryRun {
-		u.cfg.Log("creating upgraded release for %s", name)
-		if err := u.cfg.Releases.Create(upgradedRelease); err != nil {
-			return nil, err
-		}
-	}
 
 	u.cfg.Log("performing update for %s", name)
 	res, err := u.performUpgrade(currentRelease, upgradedRelease)
@@ -137,6 +130,10 @@ func (u *Upgrade) prepareUpgrade(name string, chart *chart.Chart, vals map[strin
 		return nil, nil, err
 	}
 
+	if err := chartutil.ProcessDependencies(chart, vals); err != nil {
+		return nil, nil, err
+	}
+
 	// finds the non-deleted release with the given name
 	lastRelease, err := u.cfg.Releases.Last(name)
 	if err != nil {
@@ -150,6 +147,7 @@ func (u *Upgrade) prepareUpgrade(name string, chart *chart.Chart, vals map[strin
 	options := chartutil.ReleaseOptions{
 		Name:      name,
 		Namespace: currentRelease.Namespace,
+		Revision:  revision,
 		IsUpgrade: true,
 	}
 
@@ -162,7 +160,7 @@ func (u *Upgrade) prepareUpgrade(name string, chart *chart.Chart, vals map[strin
 		return nil, nil, err
 	}
 
-	hooks, manifestDoc, notesTxt, err := u.cfg.renderResources(chart, valuesToRender, "")
+	hooks, manifestDoc, notesTxt, err := u.cfg.renderResources(chart, valuesToRender, "", u.SubNotes)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -192,25 +190,47 @@ func (u *Upgrade) prepareUpgrade(name string, chart *chart.Chart, vals map[strin
 }
 
 func (u *Upgrade) performUpgrade(originalRelease, upgradedRelease *release.Release) (*release.Release, error) {
+	current, err := u.cfg.KubeClient.Build(bytes.NewBufferString(originalRelease.Manifest), false)
+	if err != nil {
+		return upgradedRelease, errors.Wrap(err, "unable to build kubernetes objects from current release manifest")
+	}
+	target, err := u.cfg.KubeClient.Build(bytes.NewBufferString(upgradedRelease.Manifest), true)
+	if err != nil {
+		return upgradedRelease, errors.Wrap(err, "unable to build kubernetes objects from new release manifest")
+	}
+
+	// Do a basic diff using gvk + name to figure out what new resources are being created so we can validate they don't already exist
+	existingResources := make(map[string]bool)
+	for _, r := range current {
+		existingResources[objectKey(r)] = true
+	}
+
+	var toBeCreated kube.ResourceList
+	for _, r := range target {
+		if !existingResources[objectKey(r)] {
+			toBeCreated = append(toBeCreated, r)
+		}
+	}
+
+	if err := existingResourceConflict(toBeCreated); err != nil {
+		return nil, errors.Wrap(err, "rendered manifests contain a new resource that already exists. Unable to continue with update")
+	}
+
 	if u.DryRun {
 		u.cfg.Log("dry run for %s", upgradedRelease.Name)
 		upgradedRelease.Info.Description = "Dry run complete"
 		return upgradedRelease, nil
 	}
 
-	current, err := u.cfg.KubeClient.Build(bytes.NewBufferString(originalRelease.Manifest))
-	if err != nil {
-		return upgradedRelease, errors.Wrap(err, "unable to build kubernetes objects from current release manifest")
-	}
-	target, err := u.cfg.KubeClient.Build(bytes.NewBufferString(upgradedRelease.Manifest))
-	if err != nil {
-		return upgradedRelease, errors.Wrap(err, "unable to build kubernetes objects from new release manifest")
+	u.cfg.Log("creating upgraded release for %s", upgradedRelease.Name)
+	if err := u.cfg.Releases.Create(upgradedRelease); err != nil {
+		return nil, err
 	}
 
 	// pre-upgrade hooks
 	if !u.DisableHooks {
 		if err := u.cfg.execHook(upgradedRelease, release.HookPreUpgrade, u.Timeout); err != nil {
-			return u.failRelease(upgradedRelease, fmt.Errorf("pre-upgrade hooks failed: %s", err))
+			return u.failRelease(upgradedRelease, kube.ResourceList{}, fmt.Errorf("pre-upgrade hooks failed: %s", err))
 		}
 	} else {
 		u.cfg.Log("upgrade hooks disabled for %s", upgradedRelease.Name)
@@ -219,7 +239,7 @@ func (u *Upgrade) performUpgrade(originalRelease, upgradedRelease *release.Relea
 	results, err := u.cfg.KubeClient.Update(current, target, u.Force)
 	if err != nil {
 		u.cfg.recordRelease(originalRelease)
-		return u.failRelease(upgradedRelease, err)
+		return u.failRelease(upgradedRelease, results.Created, err)
 	}
 
 	if u.Recreate {
@@ -235,14 +255,14 @@ func (u *Upgrade) performUpgrade(originalRelease, upgradedRelease *release.Relea
 	if u.Wait {
 		if err := u.cfg.KubeClient.Wait(target, u.Timeout); err != nil {
 			u.cfg.recordRelease(originalRelease)
-			return u.failRelease(upgradedRelease, err)
+			return u.failRelease(upgradedRelease, results.Created, err)
 		}
 	}
 
 	// post-upgrade hooks
 	if !u.DisableHooks {
 		if err := u.cfg.execHook(upgradedRelease, release.HookPostUpgrade, u.Timeout); err != nil {
-			return u.failRelease(upgradedRelease, fmt.Errorf("post-upgrade hooks failed: %s", err))
+			return u.failRelease(upgradedRelease, results.Created, fmt.Errorf("post-upgrade hooks failed: %s", err))
 		}
 	}
 
@@ -255,13 +275,25 @@ func (u *Upgrade) performUpgrade(originalRelease, upgradedRelease *release.Relea
 	return upgradedRelease, nil
 }
 
-func (u *Upgrade) failRelease(rel *release.Release, err error) (*release.Release, error) {
+func (u *Upgrade) failRelease(rel *release.Release, created kube.ResourceList, err error) (*release.Release, error) {
 	msg := fmt.Sprintf("Upgrade %q failed: %s", rel.Name, err)
 	u.cfg.Log("warning: %s", msg)
 
 	rel.Info.Status = release.StatusFailed
 	rel.Info.Description = msg
 	u.cfg.recordRelease(rel)
+	if u.CleanupOnFail {
+		u.cfg.Log("Cleanup on fail set, cleaning up %d resources", len(created))
+		_, errs := u.cfg.KubeClient.Delete(created)
+		if errs != nil {
+			var errorList []string
+			for _, e := range errs {
+				errorList = append(errorList, e.Error())
+			}
+			return rel, errors.Wrapf(fmt.Errorf("unable to cleanup resources: %s", strings.Join(errorList, ", ")), "an error occurred while cleaning up resources. original upgrade error: %s", err)
+		}
+		u.cfg.Log("Resource cleanup complete")
+	}
 	if u.Atomic {
 		u.cfg.Log("Upgrade failed and atomic is set, rolling back to last successful release")
 
@@ -341,7 +373,7 @@ func (u *Upgrade) reuseValues(chart *chart.Chart, current *release.Release, newV
 }
 
 func validateManifest(c kube.Interface, manifest []byte) error {
-	_, err := c.Build(bytes.NewReader(manifest))
+	_, err := c.Build(bytes.NewReader(manifest), true)
 	return err
 }
 
@@ -379,4 +411,9 @@ func recreate(cfg *Configuration, resources kube.ResourceList) error {
 		}
 	}
 	return nil
+}
+
+func objectKey(r *resource.Info) string {
+	gvk := r.Object.GetObjectKind().GroupVersionKind()
+	return fmt.Sprintf("%s/%s/%s", gvk.GroupVersion().String(), gvk.Kind, r.Name)
 }

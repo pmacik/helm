@@ -22,13 +22,18 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 
-	"helm.sh/helm/pkg/helmpath"
-	"helm.sh/helm/pkg/plugin"
+	"helm.sh/helm/v3/pkg/plugin"
 )
+
+type pluginError struct {
+	error
+	code int
+}
 
 // loadPlugins loads plugins into the command list.
 //
@@ -42,7 +47,7 @@ func loadPlugins(baseCmd *cobra.Command, out io.Writer) {
 		return
 	}
 
-	found, err := findPlugins(helmpath.Plugins())
+	found, err := findPlugins(settings.PluginsDirectory)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to load plugins: %s", err)
 		return
@@ -84,15 +89,24 @@ func loadPlugins(baseCmd *cobra.Command, out io.Writer) {
 					return errors.Errorf("plugin %q exited with error", md.Name)
 				}
 
+				env := os.Environ()
+				for k, v := range settings.EnvVars() {
+					env = append(env, fmt.Sprintf("%s=%s", k, v))
+				}
+
 				prog := exec.Command(main, argv...)
-				prog.Env = os.Environ()
+				prog.Env = env
 				prog.Stdin = os.Stdin
 				prog.Stdout = out
 				prog.Stderr = os.Stderr
 				if err := prog.Run(); err != nil {
 					if eerr, ok := err.(*exec.ExitError); ok {
 						os.Stderr.Write(eerr.Stderr)
-						return errors.Errorf("plugin %q exited with error", md.Name)
+						status := eerr.Sys().(syscall.WaitStatus)
+						return pluginError{
+							error: errors.Errorf("plugin %q exited with error", md.Name),
+							code:  status.ExitStatus(),
+						}
 					}
 					return err
 				}
@@ -113,7 +127,7 @@ func loadPlugins(baseCmd *cobra.Command, out io.Writer) {
 func manuallyProcessArgs(args []string) ([]string, []string) {
 	known := []string{}
 	unknown := []string{}
-	kvargs := []string{"--context", "--namespace"}
+	kvargs := []string{"--kube-context", "--namespace", "--kubeconfig", "--registry-config", "--repository-cache", "--repository-config"}
 	knownArg := func(a string) bool {
 		for _, pre := range kvargs {
 			if strings.HasPrefix(a, pre+"=") {
@@ -126,7 +140,7 @@ func manuallyProcessArgs(args []string) ([]string, []string) {
 		switch a := args[i]; a {
 		case "--debug":
 			known = append(known, a)
-		case "--context", "--namespace":
+		case "--kube-context", "--namespace", "-n", "--kubeconfig", "--registry-config", "--repository-cache", "--repository-config":
 			known = append(known, a, args[i+1])
 			i++
 		default:

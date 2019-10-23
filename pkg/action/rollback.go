@@ -19,11 +19,13 @@ package action
 import (
 	"bytes"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/pkg/errors"
 
-	"helm.sh/helm/pkg/release"
+	"helm.sh/helm/v3/pkg/release"
+	helmtime "helm.sh/helm/v3/pkg/time"
 )
 
 // Rollback is the action for rolling back to a given release.
@@ -32,13 +34,14 @@ import (
 type Rollback struct {
 	cfg *Configuration
 
-	Version      int
-	Timeout      time.Duration
-	Wait         bool
-	DisableHooks bool
-	DryRun       bool
-	Recreate     bool // will (if true) recreate pods after a rollback.
-	Force        bool // will (if true) force resource upgrade through uninstall/recreate if needed
+	Version       int
+	Timeout       time.Duration
+	Wait          bool
+	DisableHooks  bool
+	DryRun        bool
+	Recreate      bool // will (if true) recreate pods after a rollback.
+	Force         bool // will (if true) force resource upgrade through uninstall/recreate if needed
+	CleanupOnFail bool
 }
 
 // NewRollback creates a new Rollback object with the given configuration.
@@ -50,6 +53,10 @@ func NewRollback(cfg *Configuration) *Rollback {
 
 // Run executes 'helm rollback' against the given release.
 func (r *Rollback) Run(name string) error {
+	if err := r.cfg.KubeClient.IsReachable(); err != nil {
+		return err
+	}
+
 	r.cfg.Log("preparing rollback of %s", name)
 	currentRelease, targetRelease, err := r.prepareRollback(name)
 	if err != nil {
@@ -62,6 +69,7 @@ func (r *Rollback) Run(name string) error {
 			return err
 		}
 	}
+
 	r.cfg.Log("performing rollback of %s", name)
 	if _, err := r.performRollback(currentRelease, targetRelease); err != nil {
 		return err
@@ -112,7 +120,7 @@ func (r *Rollback) prepareRollback(name string) (*release.Release, *release.Rele
 		Config:    previousRelease.Config,
 		Info: &release.Info{
 			FirstDeployed: currentRelease.Info.FirstDeployed,
-			LastDeployed:  time.Now(),
+			LastDeployed:  helmtime.Now(),
 			Status:        release.StatusPendingRollback,
 			Notes:         previousRelease.Info.Notes,
 			// Because we lose the reference to previous version elsewhere, we set the
@@ -133,11 +141,11 @@ func (r *Rollback) performRollback(currentRelease, targetRelease *release.Releas
 		return targetRelease, nil
 	}
 
-	current, err := r.cfg.KubeClient.Build(bytes.NewBufferString(currentRelease.Manifest))
+	current, err := r.cfg.KubeClient.Build(bytes.NewBufferString(currentRelease.Manifest), false)
 	if err != nil {
 		return targetRelease, errors.Wrap(err, "unable to build kubernetes objects from current release manifest")
 	}
-	target, err := r.cfg.KubeClient.Build(bytes.NewBufferString(targetRelease.Manifest))
+	target, err := r.cfg.KubeClient.Build(bytes.NewBufferString(targetRelease.Manifest), false)
 	if err != nil {
 		return targetRelease, errors.Wrap(err, "unable to build kubernetes objects from new release manifest")
 	}
@@ -161,6 +169,18 @@ func (r *Rollback) performRollback(currentRelease, targetRelease *release.Releas
 		targetRelease.Info.Description = msg
 		r.cfg.recordRelease(currentRelease)
 		r.cfg.recordRelease(targetRelease)
+		if r.CleanupOnFail {
+			r.cfg.Log("Cleanup on fail set, cleaning up %d resources", len(results.Created))
+			_, errs := r.cfg.KubeClient.Delete(results.Created)
+			if errs != nil {
+				var errorList []string
+				for _, e := range errs {
+					errorList = append(errorList, e.Error())
+				}
+				return targetRelease, errors.Wrapf(fmt.Errorf("unable to cleanup resources: %s", strings.Join(errorList, ", ")), "an error occurred while cleaning up resources. original rollback error: %s", err)
+			}
+			r.cfg.Log("Resource cleanup complete")
+		}
 		return targetRelease, err
 	}
 

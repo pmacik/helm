@@ -19,36 +19,32 @@ import (
 	"log"
 	"strings"
 
-	"helm.sh/helm/pkg/chart"
+	"helm.sh/helm/v3/pkg/chart"
 )
 
 // ProcessDependencies checks through this chart's dependencies, processing accordingly.
 func ProcessDependencies(c *chart.Chart, v Values) error {
-	if err := processDependencyEnabled(c, v); err != nil {
+	if err := processDependencyEnabled(c, v, ""); err != nil {
 		return err
 	}
 	return processDependencyImportValues(c)
 }
 
 // processDependencyConditions disables charts based on condition path value in values
-func processDependencyConditions(reqs []*chart.Dependency, cvals Values) {
+func processDependencyConditions(reqs []*chart.Dependency, cvals Values, cpath string) {
 	if reqs == nil {
 		return
 	}
 	for _, r := range reqs {
-		var hasTrue, hasFalse bool
 		for _, c := range strings.Split(strings.TrimSpace(r.Condition), ",") {
 			if len(c) > 0 {
 				// retrieve value
-				vv, err := cvals.PathValue(c)
+				vv, err := cvals.PathValue(cpath + c)
 				if err == nil {
 					// if not bool, warn
 					if bv, ok := vv.(bool); ok {
-						if bv {
-							hasTrue = true
-						} else {
-							hasFalse = true
-						}
+						r.Enabled = bv
+						break
 					} else {
 						log.Printf("Warning: Condition path '%s' for chart %s returned non-bool value", c, r.Name)
 					}
@@ -56,17 +52,7 @@ func processDependencyConditions(reqs []*chart.Dependency, cvals Values) {
 					// this is a real error
 					log.Printf("Warning: PathValue returned error %v", err)
 				}
-				if vv != nil {
-					// got first value, break loop
-					break
-				}
 			}
-		}
-		if !hasTrue && hasFalse {
-			r.Enabled = false
-		} else if hasTrue {
-			r.Enabled = true
-
 		}
 	}
 }
@@ -129,7 +115,7 @@ func getAliasDependency(charts []*chart.Chart, dep *chart.Dependency) *chart.Cha
 }
 
 // processDependencyEnabled removes disabled charts from dependencies
-func processDependencyEnabled(c *chart.Chart, v map[string]interface{}) error {
+func processDependencyEnabled(c *chart.Chart, v map[string]interface{}, path string) error {
 	if c.Metadata.Dependencies == nil {
 		return nil
 	}
@@ -170,7 +156,7 @@ Loop:
 	}
 	// flag dependencies as enabled/disabled
 	processDependencyTags(c.Metadata.Dependencies, cvals)
-	processDependencyConditions(c.Metadata.Dependencies, cvals)
+	processDependencyConditions(c.Metadata.Dependencies, cvals, path)
 	// make a map of charts to remove
 	rm := map[string]struct{}{}
 	for _, r := range c.Metadata.Dependencies {
@@ -190,7 +176,8 @@ Loop:
 
 	// recursively call self to process sub dependencies
 	for _, t := range cd {
-		if err := processDependencyEnabled(t, cvals); err != nil {
+		subpath := path + t.Metadata.Name + "."
+		if err := processDependencyEnabled(t, cvals, subpath); err != nil {
 			return err
 		}
 	}

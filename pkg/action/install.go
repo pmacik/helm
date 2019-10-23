@@ -27,23 +27,23 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/Masterminds/sprig"
+	"github.com/Masterminds/sprig/v3"
 	"github.com/pkg/errors"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/cli-runtime/pkg/resource"
 
-	"helm.sh/helm/pkg/chart"
-	"helm.sh/helm/pkg/chartutil"
-	"helm.sh/helm/pkg/cli"
-	"helm.sh/helm/pkg/downloader"
-	"helm.sh/helm/pkg/engine"
-	"helm.sh/helm/pkg/getter"
-	"helm.sh/helm/pkg/helmpath"
-	kubefake "helm.sh/helm/pkg/kube/fake"
-	"helm.sh/helm/pkg/release"
-	"helm.sh/helm/pkg/releaseutil"
-	"helm.sh/helm/pkg/repo"
-	"helm.sh/helm/pkg/storage"
-	"helm.sh/helm/pkg/storage/driver"
+	"helm.sh/helm/v3/pkg/chart"
+	"helm.sh/helm/v3/pkg/chartutil"
+	"helm.sh/helm/v3/pkg/cli"
+	"helm.sh/helm/v3/pkg/downloader"
+	"helm.sh/helm/v3/pkg/engine"
+	"helm.sh/helm/v3/pkg/getter"
+	kubefake "helm.sh/helm/v3/pkg/kube/fake"
+	"helm.sh/helm/v3/pkg/release"
+	"helm.sh/helm/v3/pkg/releaseutil"
+	"helm.sh/helm/v3/pkg/repo"
+	"helm.sh/helm/v3/pkg/storage"
+	"helm.sh/helm/v3/pkg/storage/driver"
 )
 
 // releaseNameMaxLen is the maximum length of a release name.
@@ -82,6 +82,10 @@ type Install struct {
 	OutputDir        string
 	Atomic           bool
 	SkipCRDs         bool
+	SubNotes         bool
+	// APIVersions allows a manual set of supported API Versions to be passed
+	// (for things like templating). These are ignored if ClientOnly is false
+	APIVersions chartutil.VersionSet
 }
 
 // ChartPathOptions captures common options used for controlling chart paths
@@ -104,20 +108,80 @@ func NewInstall(cfg *Configuration) *Install {
 	}
 }
 
+func (i *Install) installCRDs(crds []*chart.File) error {
+	// We do these one file at a time in the order they were read.
+	totalItems := []*resource.Info{}
+	for _, obj := range crds {
+		// Read in the resources
+		res, err := i.cfg.KubeClient.Build(bytes.NewBuffer(obj.Data), false)
+		if err != nil {
+			return errors.Wrapf(err, "failed to install CRD %s", obj.Name)
+		}
+
+		// Send them to Kube
+		if _, err := i.cfg.KubeClient.Create(res); err != nil {
+			// If the error is CRD already exists, continue.
+			if apierrors.IsAlreadyExists(err) {
+				crdName := res[0].Name
+				i.cfg.Log("CRD %s is already present. Skipping.", crdName)
+				continue
+			}
+			return errors.Wrapf(err, "failed to instal CRD %s", obj.Name)
+		}
+		totalItems = append(totalItems, res...)
+	}
+	// Invalidate the local cache, since it will not have the new CRDs
+	// present.
+	discoveryClient, err := i.cfg.RESTClientGetter.ToDiscoveryClient()
+	if err != nil {
+		return err
+	}
+	i.cfg.Log("Clearing discovery cache")
+	discoveryClient.Invalidate()
+	// Give time for the CRD to be recognized.
+	if err := i.cfg.KubeClient.Wait(totalItems, 60*time.Second); err != nil {
+		return err
+	}
+	// Make sure to force a rebuild of the cache.
+	discoveryClient.ServerGroups()
+	return nil
+}
+
 // Run executes the installation
 //
 // If DryRun is set to true, this will prepare the release, but not install it
 func (i *Install) Run(chrt *chart.Chart, vals map[string]interface{}) (*release.Release, error) {
+	// Check reachability of cluster unless in client-only mode (e.g. `helm template` without `--validate`)
+	if !i.ClientOnly {
+		if err := i.cfg.KubeClient.IsReachable(); err != nil {
+			return nil, err
+		}
+	}
+
 	if err := i.availableName(); err != nil {
 		return nil, err
+	}
+
+	// Pre-install anything in the crd/ directory. We do this before Helm
+	// contacts the upstream server and builds the capabilities object.
+	if crds := chrt.CRDs(); !i.ClientOnly && !i.SkipCRDs && len(crds) > 0 {
+		// On dry run, bail here
+		if i.DryRun {
+			i.cfg.Log("WARNING: This chart or one of its subcharts contains CRDs. Rendering may fail or contain inaccuracies.")
+		} else if err := i.installCRDs(crds); err != nil {
+			return nil, err
+		}
 	}
 
 	if i.ClientOnly {
 		// Add mock objects in here so it doesn't use Kube API server
 		// NOTE(bacongobbler): used for `helm template`
 		i.cfg.Capabilities = chartutil.DefaultCapabilities
+		i.cfg.Capabilities.APIVersions = append(i.cfg.Capabilities.APIVersions, i.APIVersions...)
 		i.cfg.KubeClient = &kubefake.PrintingKubeClient{Out: ioutil.Discard}
 		i.cfg.Releases = storage.Init(driver.NewMemory())
+	} else if !i.ClientOnly && len(i.APIVersions) > 0 {
+		i.cfg.Log("API Version list given outside of client only mode, this list will be ignored")
 	}
 
 	if err := chartutil.ProcessDependencies(chrt, vals); err != nil {
@@ -136,6 +200,7 @@ func (i *Install) Run(chrt *chart.Chart, vals map[string]interface{}) (*release.
 	options := chartutil.ReleaseOptions{
 		Name:      i.ReleaseName,
 		Namespace: i.Namespace,
+		Revision:  1,
 		IsInstall: true,
 	}
 	valuesToRender, err := chartutil.ToRenderValues(chrt, vals, options, caps)
@@ -145,36 +210,8 @@ func (i *Install) Run(chrt *chart.Chart, vals map[string]interface{}) (*release.
 
 	rel := i.createRelease(chrt, vals)
 
-	// Pre-install anything in the crd/ directory
-	if crds := chrt.CRDs(); !i.SkipCRDs && len(crds) > 0 {
-		// We do these one at a time in the order they were read.
-		for _, obj := range crds {
-			// Read in the resources
-			res, err := i.cfg.KubeClient.Build(bytes.NewBuffer(obj.Data))
-			if err != nil {
-				// We bail out immediately
-				return nil, errors.Wrapf(err, "failed to install CRD %s", obj.Name)
-			}
-			// On dry run, bail here
-			if i.DryRun {
-				i.cfg.Log("WARNING: This chart or one of its subcharts contains CRDs. Rendering may fail or contain inaccuracies.")
-				continue
-			}
-			// Send them to Kube
-			if _, err := i.cfg.KubeClient.Create(res); err != nil {
-				// If the error is CRD already exists, continue.
-				if apierrors.IsAlreadyExists(err) {
-					crdName := res[0].Name
-					i.cfg.Log("CRD %s is already present. Skipping.", crdName)
-					continue
-				}
-				return i.failRelease(rel, err)
-			}
-		}
-	}
-
 	var manifestDoc *bytes.Buffer
-	rel.Hooks, manifestDoc, rel.Info.Notes, err = i.cfg.renderResources(chrt, valuesToRender, i.OutputDir)
+	rel.Hooks, manifestDoc, rel.Info.Notes, err = i.cfg.renderResources(chrt, valuesToRender, i.OutputDir, i.SubNotes)
 	// Even for errors, attach this if available
 	if manifestDoc != nil {
 		rel.Manifest = manifestDoc.String()
@@ -189,9 +226,21 @@ func (i *Install) Run(chrt *chart.Chart, vals map[string]interface{}) (*release.
 	// Mark this release as in-progress
 	rel.SetStatus(release.StatusPendingInstall, "Initial install underway")
 
-	resources, err := i.cfg.KubeClient.Build(bytes.NewBufferString(rel.Manifest))
+	resources, err := i.cfg.KubeClient.Build(bytes.NewBufferString(rel.Manifest), true)
 	if err != nil {
 		return nil, errors.Wrap(err, "unable to build kubernetes objects from release manifest")
+	}
+
+	// Install requires an extra validation step of checking that resources
+	// don't already exist before we actually create resources. If we continue
+	// forward and create the release object with resources that already exist,
+	// we'll end up in a state where we will delete those resources upon
+	// deleting the release because the manifest will be pointing at that
+	// resource
+	if !i.ClientOnly {
+		if err := existingResourceConflict(resources); err != nil {
+			return nil, errors.Wrap(err, "rendered manifests contain a resource that already exists. Unable to continue with install")
+		}
 	}
 
 	// Bail out here if it is a dry run
@@ -360,7 +409,7 @@ func (i *Install) replaceRelease(rel *release.Release) error {
 }
 
 // renderResources renders the templates in a chart
-func (c *Configuration) renderResources(ch *chart.Chart, values chartutil.Values, outputDir string) ([]*release.Hook, *bytes.Buffer, string, error) {
+func (c *Configuration) renderResources(ch *chart.Chart, values chartutil.Values, outputDir string, subNotes bool) ([]*release.Hook, *bytes.Buffer, string, error) {
 	hs := []*release.Hook{}
 	b := bytes.NewBuffer(nil)
 
@@ -385,17 +434,20 @@ func (c *Configuration) renderResources(ch *chart.Chart, values chartutil.Values
 	// text file. We have to spin through this map because the file contains path information, so we
 	// look for terminating NOTES.txt. We also remove it from the files so that we don't have to skip
 	// it in the sortHooks.
-	notes := ""
+	var notesBuffer bytes.Buffer
 	for k, v := range files {
 		if strings.HasSuffix(k, notesFileSuffix) {
-			// Only apply the notes if it belongs to the parent chart
-			// Note: Do not use filePath.Join since it creates a path with \ which is not expected
-			if k == path.Join(ch.Name(), "templates", notesFileSuffix) {
-				notes = v
+			if subNotes || (k == path.Join(ch.Name(), "templates", notesFileSuffix)) {
+				// If buffer contains data, add newline before adding more
+				if notesBuffer.Len() > 0 {
+					notesBuffer.WriteString("\n")
+				}
+				notesBuffer.WriteString(v)
 			}
 			delete(files, k)
 		}
 	}
+	notes := notesBuffer.String()
 
 	// Sort hooks, manifests, and partials. Only hooks and manifests are returned,
 	// as partials are not used after renderer.Render. Empty manifests are also
@@ -563,8 +615,8 @@ OUTER:
 // - if path is absolute or begins with '.', error out here
 // - URL
 //
-// If 'verify' is true, this will attempt to also verify the chart.
-func (c *ChartPathOptions) LocateChart(name string, settings cli.EnvSettings) (string, error) {
+// If 'verify' was set on ChartPathOptions, this will attempt to also verify the chart.
+func (c *ChartPathOptions) LocateChart(name string, settings *cli.EnvSettings) (string, error) {
 	name = strings.TrimSpace(name)
 	version := strings.TrimSpace(c.Version)
 
@@ -591,6 +643,8 @@ func (c *ChartPathOptions) LocateChart(name string, settings cli.EnvSettings) (s
 		Options: []getter.Option{
 			getter.WithBasicAuth(c.Username, c.Password),
 		},
+		RepositoryConfig: settings.RepositoryConfig,
+		RepositoryCache:  settings.RepositoryCache,
 	}
 	if c.Verify {
 		dl.Verify = downloader.VerifyAlways
@@ -604,11 +658,11 @@ func (c *ChartPathOptions) LocateChart(name string, settings cli.EnvSettings) (s
 		name = chartURL
 	}
 
-	if _, err := os.Stat(helmpath.Archive()); os.IsNotExist(err) {
-		os.MkdirAll(helmpath.Archive(), 0744)
+	if err := os.MkdirAll(settings.RepositoryCache, 0755); err != nil {
+		return "", err
 	}
 
-	filename, _, err := dl.DownloadTo(name, version, helmpath.Archive())
+	filename, _, err := dl.DownloadTo(name, version, settings.RepositoryCache)
 	if err == nil {
 		lname, err := filepath.Abs(filename)
 		if err != nil {

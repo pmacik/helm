@@ -24,11 +24,13 @@ import (
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 
-	"helm.sh/helm/cmd/helm/require"
-	"helm.sh/helm/pkg/action"
-	"helm.sh/helm/pkg/chart/loader"
-	"helm.sh/helm/pkg/cli/values"
-	"helm.sh/helm/pkg/storage/driver"
+	"helm.sh/helm/v3/cmd/helm/require"
+	"helm.sh/helm/v3/pkg/action"
+	"helm.sh/helm/v3/pkg/chart/loader"
+	"helm.sh/helm/v3/pkg/cli/output"
+	"helm.sh/helm/v3/pkg/cli/values"
+	"helm.sh/helm/v3/pkg/getter"
+	"helm.sh/helm/v3/pkg/storage/driver"
 )
 
 const upgradeDesc = `
@@ -41,7 +43,9 @@ version will be specified unless the '--version' flag is set.
 
 To override values in a chart, use either the '--values' flag and pass in a file
 or use the '--set' flag and pass configuration from the command line, to force string
-values, use '--set-string'.
+values, use '--set-string'. In case a value is large and therefore
+you want not to use neither '--values' nor '--set', use '--set-file' to read the
+single large value from file.
 
 You can specify the '--values'/'-f' flag multiple times. The priority will be given to the
 last (right-most) file specified. For example, if both myvalues.yaml and override.yaml
@@ -59,6 +63,7 @@ set for a key called 'foo', the 'newbar' value would take precedence:
 func newUpgradeCmd(cfg *action.Configuration, out io.Writer) *cobra.Command {
 	client := action.NewUpgrade(cfg)
 	valueOpts := &values.Options{}
+	var outfmt output.Format
 
 	cmd := &cobra.Command{
 		Use:   "upgrade [RELEASE] [CHART]",
@@ -66,14 +71,14 @@ func newUpgradeCmd(cfg *action.Configuration, out io.Writer) *cobra.Command {
 		Long:  upgradeDesc,
 		Args:  require.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			client.Namespace = getNamespace()
+			client.Namespace = settings.Namespace()
 
 			if client.Version == "" && client.Devel {
 				debug("setting version to >0.0.0-0")
 				client.Version = ">0.0.0-0"
 			}
 
-			vals, err := valueOpts.MergeValues(settings)
+			vals, err := valueOpts.MergeValues(getter.All(settings))
 			if err != nil {
 				return err
 			}
@@ -89,7 +94,10 @@ func newUpgradeCmd(cfg *action.Configuration, out io.Writer) *cobra.Command {
 				histClient := action.NewHistory(cfg)
 				histClient.Max = 1
 				if _, err := histClient.Run(args[0]); err == driver.ErrReleaseNotFound {
-					fmt.Fprintf(out, "Release %q does not exist. Installing it now.\n", args[0])
+					// Only print this to stdout for table output
+					if outfmt == output.Table {
+						fmt.Fprintf(out, "Release %q does not exist. Installing it now.\n", args[0])
+					}
 					instClient := action.NewInstall(cfg)
 					instClient.ChartPathOptions = client.ChartPathOptions
 					instClient.DryRun = client.DryRun
@@ -101,8 +109,10 @@ func newUpgradeCmd(cfg *action.Configuration, out io.Writer) *cobra.Command {
 					instClient.Atomic = client.Atomic
 
 					rel, err := runInstall(args, instClient, valueOpts, out)
-					action.PrintRelease(out, rel)
-					return err
+					if err != nil {
+						return err
+					}
+					return outfmt.Write(out, &statusPrinter{rel, settings.Debug})
 				}
 			}
 
@@ -117,44 +127,38 @@ func newUpgradeCmd(cfg *action.Configuration, out io.Writer) *cobra.Command {
 				}
 			}
 
-			resp, err := client.Run(args[0], ch, vals)
+			rel, err := client.Run(args[0], ch, vals)
 			if err != nil {
 				return errors.Wrap(err, "UPGRADE FAILED")
 			}
 
-			if settings.Debug {
-				action.PrintRelease(out, resp)
+			if outfmt == output.Table {
+				fmt.Fprintf(out, "Release %q has been upgraded. Happy Helming!\n", args[0])
 			}
 
-			fmt.Fprintf(out, "Release %q has been upgraded. Happy Helming!\n", args[0])
-
-			// Print the status like status command does
-			statusClient := action.NewStatus(cfg)
-			rel, err := statusClient.Run(args[0])
-			if err != nil {
-				return err
-			}
-			action.PrintRelease(out, rel)
-
-			return nil
+			return outfmt.Write(out, &statusPrinter{rel, settings.Debug})
 		},
 	}
 
 	f := cmd.Flags()
 	f.BoolVarP(&client.Install, "install", "i", false, "if a release by this name doesn't already exist, run an install")
-	f.BoolVar(&client.Devel, "devel", false, "use development versions, too. Equivalent to version '>0.0.0-0'. If --version is set, this is ignored.")
+	f.BoolVar(&client.Devel, "devel", false, "use development versions, too. Equivalent to version '>0.0.0-0'. If --version is set, this is ignored")
 	f.BoolVar(&client.DryRun, "dry-run", false, "simulate an upgrade")
 	f.BoolVar(&client.Recreate, "recreate-pods", false, "performs pods restart for the resource if applicable")
-	f.BoolVar(&client.Force, "force", false, "force resource update through delete/recreate if needed")
+	f.MarkDeprecated("recreate-pods", "functionality will no longer be updated. Consult the documentation for other methods to recreate pods")
+	f.BoolVar(&client.Force, "force", false, "force resource updates through a replacement strategy")
 	f.BoolVar(&client.DisableHooks, "no-hooks", false, "disable pre/post upgrade hooks")
 	f.DurationVar(&client.Timeout, "timeout", 300*time.Second, "time to wait for any individual Kubernetes operation (like Jobs for hooks)")
 	f.BoolVar(&client.ResetValues, "reset-values", false, "when upgrading, reset the values to the ones built into the chart")
-	f.BoolVar(&client.ReuseValues, "reuse-values", false, "when upgrading, reuse the last release's values and merge in any overrides from the command line via --set and -f. If '--reset-values' is specified, this is ignored.")
+	f.BoolVar(&client.ReuseValues, "reuse-values", false, "when upgrading, reuse the last release's values and merge in any overrides from the command line via --set and -f. If '--reset-values' is specified, this is ignored")
 	f.BoolVar(&client.Wait, "wait", false, "if set, will wait until all Pods, PVCs, Services, and minimum number of Pods of a Deployment, StatefulSet, or ReplicaSet are in a ready state before marking the release as successful. It will wait for as long as --timeout")
 	f.BoolVar(&client.Atomic, "atomic", false, "if set, upgrade process rolls back changes made in case of failed upgrade. The --wait flag will be set automatically if --atomic is used")
-	f.IntVar(&client.MaxHistory, "history-max", 0, "limit the maximum number of revisions saved per release. Use 0 for no limit.")
+	f.IntVar(&client.MaxHistory, "history-max", 10, "limit the maximum number of revisions saved per release. Use 0 for no limit")
+	f.BoolVar(&client.CleanupOnFail, "cleanup-on-fail", false, "allow deletion of new resources created in this upgrade when upgrade fails")
+	f.BoolVar(&client.SubNotes, "render-subchart-notes", false, "if set, render subchart notes along with the parent")
 	addChartPathOptionsFlags(f, &client.ChartPathOptions)
 	addValueOptionsFlags(f, valueOpts)
+	bindOutputFlag(cmd, &outfmt)
 
 	return cmd
 }

@@ -24,12 +24,10 @@ import (
 
 	"github.com/pkg/errors"
 
-	"helm.sh/helm/pkg/chartutil"
-	"helm.sh/helm/pkg/lint"
-	"helm.sh/helm/pkg/lint/support"
+	"helm.sh/helm/v3/pkg/chartutil"
+	"helm.sh/helm/v3/pkg/lint"
+	"helm.sh/helm/v3/pkg/lint/support"
 )
-
-var errLintNoChart = errors.New("no chart found for linting (missing Chart.yaml)")
 
 // Lint is the action for checking that the semantics of a chart are well-formed.
 //
@@ -56,25 +54,19 @@ func (l *Lint) Run(paths []string, vals map[string]interface{}) *LintResult {
 	if l.Strict {
 		lowestTolerance = support.WarningSev
 	}
-
 	result := &LintResult{}
 	for _, path := range paths {
 		linter, err := lintChart(path, vals, l.Namespace, l.Strict)
 		if err != nil {
-			if err == errLintNoChart {
-				result.Errors = append(result.Errors, err)
-			}
-			if linter.HighestSeverity >= lowestTolerance {
-				result.Errors = append(result.Errors, err)
-			}
-		} else {
-			result.Messages = append(result.Messages, linter.Messages...)
-			result.TotalChartsLinted++
-			for _, msg := range linter.Messages {
-				if msg.Severity == support.ErrorSev {
-					result.Errors = append(result.Errors, msg.Err)
-					result.Messages = append(result.Messages, msg)
-				}
+			result.Errors = append(result.Errors, err)
+			continue
+		}
+
+		result.Messages = append(result.Messages, linter.Messages...)
+		result.TotalChartsLinted++
+		for _, msg := range linter.Messages {
+			if msg.Severity >= lowestTolerance {
+				result.Errors = append(result.Errors, msg.Err)
 			}
 		}
 	}
@@ -84,42 +76,41 @@ func (l *Lint) Run(paths []string, vals map[string]interface{}) *LintResult {
 func lintChart(path string, vals map[string]interface{}, namespace string, strict bool) (support.Linter, error) {
 	var chartPath string
 	linter := support.Linter{}
-	currentVals := make(map[string]interface{}, len(vals))
-	for key, value := range vals {
-		currentVals[key] = value
-	}
 
 	if strings.HasSuffix(path, ".tgz") {
 		tempDir, err := ioutil.TempDir("", "helm-lint")
 		if err != nil {
-			return linter, err
+			return linter, errors.Wrap(err, "unable to create temp dir to extract tarball")
 		}
 		defer os.RemoveAll(tempDir)
 
 		file, err := os.Open(path)
 		if err != nil {
-			return linter, err
+			return linter, errors.Wrap(err, "unable to open tarball")
 		}
 		defer file.Close()
 
 		if err = chartutil.Expand(tempDir, file); err != nil {
-			return linter, err
+			return linter, errors.Wrap(err, "unable to extract tarball")
 		}
 
-		lastHyphenIndex := strings.LastIndex(filepath.Base(path), "-")
-		if lastHyphenIndex <= 0 {
-			return linter, errors.Errorf("unable to parse chart archive %q, missing '-'", filepath.Base(path))
+		files, err := ioutil.ReadDir(tempDir)
+		if err != nil {
+			return linter, errors.Wrapf(err, "unable to read temporary output directory %s", tempDir)
 		}
-		base := filepath.Base(path)[:lastHyphenIndex]
-		chartPath = filepath.Join(tempDir, base)
+		if !files[0].IsDir() {
+			return linter, errors.Errorf("unexpected file %s in temporary output directory %s", files[0].Name(), tempDir)
+		}
+
+		chartPath = filepath.Join(tempDir, files[0].Name())
 	} else {
 		chartPath = path
 	}
 
-	// Guard: Error out of this is not a chart.
+	// Guard: Error out if this is not a chart.
 	if _, err := os.Stat(filepath.Join(chartPath, "Chart.yaml")); err != nil {
-		return linter, errLintNoChart
+		return linter, errors.Wrap(err, "unable to check Chart.yaml file in chart")
 	}
 
-	return lint.All(chartPath, currentVals, namespace, strict), nil
+	return lint.All(chartPath, vals, namespace, strict), nil
 }

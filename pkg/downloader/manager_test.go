@@ -17,12 +17,10 @@ package downloader
 
 import (
 	"bytes"
-	"os"
 	"reflect"
 	"testing"
 
-	"helm.sh/helm/pkg/chart"
-	"helm.sh/helm/pkg/helmpath/xdg"
+	"helm.sh/helm/v3/pkg/chart"
 )
 
 func TestVersionEquals(t *testing.T) {
@@ -64,12 +62,11 @@ func TestNormalizeURL(t *testing.T) {
 }
 
 func TestFindChartURL(t *testing.T) {
-	os.Setenv(xdg.CacheHomeEnvVar, "testdata/helmhome")
-	os.Setenv(xdg.ConfigHomeEnvVar, "testdata/helmhome")
-
-	b := bytes.NewBuffer(nil)
+	var b bytes.Buffer
 	m := &Manager{
-		Out: b,
+		Out:              &b,
+		RepositoryConfig: repoConfig,
+		RepositoryCache:  repoCache,
 	}
 	repos, err := m.loadChartRepositories()
 	if err != nil {
@@ -80,7 +77,7 @@ func TestFindChartURL(t *testing.T) {
 	version := "0.1.0"
 	repoURL := "http://example.com/charts"
 
-	churl, username, password, err := findChartURL(name, version, repoURL, repos)
+	churl, username, password, err := m.findChartURL(name, version, repoURL, repos)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,12 +93,11 @@ func TestFindChartURL(t *testing.T) {
 }
 
 func TestGetRepoNames(t *testing.T) {
-	os.Setenv(xdg.CacheHomeEnvVar, "testdata/helmhome")
-	os.Setenv(xdg.ConfigHomeEnvVar, "testdata/helmhome")
-
 	b := bytes.NewBuffer(nil)
 	m := &Manager{
-		Out: b,
+		Out:              b,
+		RepositoryConfig: repoConfig,
+		RepositoryCache:  repoCache,
 	}
 	tests := []struct {
 		name   string
@@ -110,11 +106,11 @@ func TestGetRepoNames(t *testing.T) {
 		err    bool
 	}{
 		{
-			name: "no repo definition failure",
+			name: "no repo definition, but references a url",
 			req: []*chart.Dependency{
 				{Name: "oedipus-rex", Repository: "http://example.com/test"},
 			},
-			err: true,
+			expect: map[string]string{"http://example.com/test": "http://example.com/test"},
 		},
 		{
 			name: "no repo definition failure -- stable repo",
@@ -150,6 +146,13 @@ func TestGetRepoNames(t *testing.T) {
 				{Name: "oedipus-rex", Repository: "@testing"},
 			},
 			expect: map[string]string{"oedipus-rex": "testing"},
+		},
+		{
+			name: "repo from local chart under charts path",
+			req: []*chart.Dependency{
+				{Name: "local-subchart", Repository: ""},
+			},
+			expect: map[string]string{},
 		},
 	}
 

@@ -19,7 +19,7 @@ package action
 import (
 	"github.com/pkg/errors"
 
-	"helm.sh/helm/pkg/release"
+	"helm.sh/helm/v3/pkg/release"
 )
 
 // History is the action for checking the release's ledger.
@@ -28,8 +28,8 @@ import (
 type History struct {
 	cfg *Configuration
 
-	Max          int
-	OutputFormat string
+	Max     int
+	Version int
 }
 
 // NewHistory creates a new History object with the given configuration.
@@ -41,6 +41,10 @@ func NewHistory(cfg *Configuration) *History {
 
 // Run executes 'helm history' against the given release.
 func (h *History) Run(name string) ([]*release.Release, error) {
+	if err := h.cfg.KubeClient.IsReachable(); err != nil {
+		return nil, err
+	}
+
 	if err := validateReleaseName(name); err != nil {
 		return nil, errors.Errorf("release name is invalid: %s", name)
 	}

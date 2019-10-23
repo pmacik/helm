@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package main // import "helm.sh/helm/cmd/helm"
+package main // import "helm.sh/helm/v3/cmd/helm"
 
 import (
 	"flag"
@@ -22,31 +22,24 @@ import (
 	"log"
 	"os"
 	"strings"
-	"sync"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
-	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/klog"
 
 	// Import to initialize client auth plugins.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
-	"helm.sh/helm/pkg/action"
-	"helm.sh/helm/pkg/cli"
-	"helm.sh/helm/pkg/gates"
-	"helm.sh/helm/pkg/kube"
-	"helm.sh/helm/pkg/storage"
-	"helm.sh/helm/pkg/storage/driver"
+	"helm.sh/helm/v3/pkg/action"
+	"helm.sh/helm/v3/pkg/cli"
+	"helm.sh/helm/v3/pkg/gates"
 )
 
 // FeatureGateOCI is the feature gate for checking if `helm chart` and `helm registry` commands should work
 const FeatureGateOCI = gates.Gate("HELM_EXPERIMENTAL_OCI")
 
 var (
-	settings   cli.EnvSettings
-	config     genericclioptions.RESTClientGetter
-	configOnce sync.Once
+	settings = cli.New()
 )
 
 func init() {
@@ -74,65 +67,20 @@ func main() {
 	actionConfig := new(action.Configuration)
 	cmd := newRootCmd(actionConfig, os.Stdout, os.Args[1:])
 
-	// Initialize the rest of the actionConfig
-	initActionConfig(actionConfig, false)
+	if err := actionConfig.Init(settings, false, os.Getenv("HELM_DRIVER"), debug); err != nil {
+		debug("%+v", err)
+		switch e := err.(type) {
+		case pluginError:
+			os.Exit(e.code)
+		default:
+			os.Exit(1)
+		}
+	}
 
 	if err := cmd.Execute(); err != nil {
 		debug("%+v", err)
 		os.Exit(1)
 	}
-}
-
-func initActionConfig(actionConfig *action.Configuration, allNamespaces bool) {
-	kc := kube.New(kubeConfig())
-	kc.Log = debug
-
-	clientset, err := kc.Factory.KubernetesClientSet()
-	if err != nil {
-		// TODO return error
-		log.Fatal(err)
-	}
-	var namespace string
-	if !allNamespaces {
-		namespace = getNamespace()
-	}
-
-	var store *storage.Storage
-	switch os.Getenv("HELM_DRIVER") {
-	case "secret", "secrets", "":
-		d := driver.NewSecrets(clientset.CoreV1().Secrets(namespace))
-		d.Log = debug
-		store = storage.Init(d)
-	case "configmap", "configmaps":
-		d := driver.NewConfigMaps(clientset.CoreV1().ConfigMaps(namespace))
-		d.Log = debug
-		store = storage.Init(d)
-	case "memory":
-		d := driver.NewMemory()
-		store = storage.Init(d)
-	default:
-		// Not sure what to do here.
-		panic("Unknown driver in HELM_DRIVER: " + os.Getenv("HELM_DRIVER"))
-	}
-
-	actionConfig.RESTClientGetter = kubeConfig()
-	actionConfig.KubeClient = kc
-	actionConfig.Releases = store
-	actionConfig.Log = debug
-}
-
-func kubeConfig() genericclioptions.RESTClientGetter {
-	configOnce.Do(func() {
-		config = kube.GetConfig(settings.KubeConfig, settings.KubeContext, settings.Namespace)
-	})
-	return config
-}
-
-func getNamespace() string {
-	if ns, _, err := kubeConfig().ToRawKubeConfigLoader().Namespace(); err == nil {
-		return ns
-	}
-	return "default"
 }
 
 // wordSepNormalizeFunc changes all flags that contain "_" separators

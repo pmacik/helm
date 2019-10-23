@@ -23,23 +23,22 @@ import (
 	"path/filepath"
 	"testing"
 
-	"helm.sh/helm/internal/test/ensure"
-	"helm.sh/helm/pkg/chart"
-	"helm.sh/helm/pkg/chart/loader"
-	"helm.sh/helm/pkg/chartutil"
-	"helm.sh/helm/pkg/helmpath"
+	"helm.sh/helm/v3/internal/test/ensure"
+	"helm.sh/helm/v3/pkg/chart"
+	"helm.sh/helm/v3/pkg/chart/loader"
+	"helm.sh/helm/v3/pkg/chartutil"
+	"helm.sh/helm/v3/pkg/helmpath"
 )
 
 func TestCreateCmd(t *testing.T) {
+	defer ensure.HelmHome(t)()
 	cname := "testchart"
-	ensure.HelmHome(t)
-	defer ensure.CleanHomeDirs(t)
-	defer testChdir(t, helmpath.CachePath())()
+	dir := ensure.TempDir(t)
+	defer testChdir(t, dir)()
 
 	// Run a create
 	if _, _, err := executeActionCommand("create " + cname); err != nil {
-		t.Errorf("Failed to run create: %s", err)
-		return
+		t.Fatalf("Failed to run create: %s", err)
 	}
 
 	// Test that the chart is there
@@ -63,22 +62,22 @@ func TestCreateCmd(t *testing.T) {
 }
 
 func TestCreateStarterCmd(t *testing.T) {
+	defer ensure.HelmHome(t)()
 	cname := "testchart"
 	defer resetEnv()()
-	ensure.HelmHome(t)
-	defer ensure.CleanHomeDirs(t)
+	os.MkdirAll(helmpath.CachePath(), 0755)
 	defer testChdir(t, helmpath.CachePath())()
 
 	// Create a starter.
-	starterchart := helmpath.Starters()
-	os.Mkdir(starterchart, 0755)
+	starterchart := helmpath.DataPath("starters")
+	os.MkdirAll(starterchart, 0755)
 	if dest, err := chartutil.Create("starterchart", starterchart); err != nil {
 		t.Fatalf("Could not create chart: %s", err)
 	} else {
 		t.Logf("Created %s", dest)
 	}
 	tplpath := filepath.Join(starterchart, "starterchart", "templates", "foo.tpl")
-	if err := ioutil.WriteFile(tplpath, []byte("test"), 0755); err != nil {
+	if err := ioutil.WriteFile(tplpath, []byte("test"), 0644); err != nil {
 		t.Fatalf("Could not write template: %s", err)
 	}
 
@@ -107,8 +106,9 @@ func TestCreateStarterCmd(t *testing.T) {
 		t.Errorf("Wrong API version: %q", c.Metadata.APIVersion)
 	}
 
-	if l := len(c.Templates); l != 6 {
-		t.Errorf("Expected 5 templates, got %d", l)
+	expectedNumberOfTemplates := 8
+	if l := len(c.Templates); l != expectedNumberOfTemplates {
+		t.Errorf("Expected %d templates, got %d", expectedNumberOfTemplates, l)
 	}
 
 	found := false
@@ -128,23 +128,23 @@ func TestCreateStarterCmd(t *testing.T) {
 
 func TestCreateStarterAbsoluteCmd(t *testing.T) {
 	defer resetEnv()()
-	ensure.HelmHome(t)
-	defer ensure.CleanHomeDirs(t)
+	defer ensure.HelmHome(t)()
 	cname := "testchart"
 
 	// Create a starter.
-	starterchart := helmpath.Starters()
-	os.Mkdir(starterchart, 0755)
+	starterchart := helmpath.DataPath("starters")
+	os.MkdirAll(starterchart, 0755)
 	if dest, err := chartutil.Create("starterchart", starterchart); err != nil {
 		t.Fatalf("Could not create chart: %s", err)
 	} else {
 		t.Logf("Created %s", dest)
 	}
 	tplpath := filepath.Join(starterchart, "starterchart", "templates", "foo.tpl")
-	if err := ioutil.WriteFile(tplpath, []byte("test"), 0755); err != nil {
+	if err := ioutil.WriteFile(tplpath, []byte("test"), 0644); err != nil {
 		t.Fatalf("Could not write template: %s", err)
 	}
 
+	os.MkdirAll(helmpath.CachePath(), 0755)
 	defer testChdir(t, helmpath.CachePath())()
 
 	starterChartPath := filepath.Join(starterchart, "starterchart")
@@ -174,8 +174,9 @@ func TestCreateStarterAbsoluteCmd(t *testing.T) {
 		t.Errorf("Wrong API version: %q", c.Metadata.APIVersion)
 	}
 
-	if l := len(c.Templates); l != 6 {
-		t.Errorf("Expected 5 templates, got %d", l)
+	expectedNumberOfTemplates := 8
+	if l := len(c.Templates); l != expectedNumberOfTemplates {
+		t.Errorf("Expected %d templates, got %d", expectedNumberOfTemplates, l)
 	}
 
 	found := false

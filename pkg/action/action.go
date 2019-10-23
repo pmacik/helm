@@ -19,7 +19,6 @@ package action
 import (
 	"path"
 	"regexp"
-	"time"
 
 	"github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -27,17 +26,20 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
-	"helm.sh/helm/internal/experimental/registry"
-	"helm.sh/helm/pkg/chartutil"
-	"helm.sh/helm/pkg/kube"
-	"helm.sh/helm/pkg/release"
-	"helm.sh/helm/pkg/storage"
+	"helm.sh/helm/v3/internal/experimental/registry"
+	"helm.sh/helm/v3/pkg/chartutil"
+	"helm.sh/helm/v3/pkg/cli"
+	"helm.sh/helm/v3/pkg/kube"
+	"helm.sh/helm/v3/pkg/release"
+	"helm.sh/helm/v3/pkg/storage"
+	"helm.sh/helm/v3/pkg/storage/driver"
+	"helm.sh/helm/v3/pkg/time"
 )
 
 // Timestamper is a function capable of producing a timestamp.Timestamper.
 //
-// By default, this is a time.Time function. This can be overridden for testing,
-// though, so that timestamps are predictable.
+// By default, this is a time.Time function from the Helm time package. This can
+// be overridden for testing though, so that timestamps are predictable.
 var Timestamper = time.Now
 
 var (
@@ -82,6 +84,16 @@ type Configuration struct {
 	Log func(string, ...interface{})
 }
 
+// RESTClientGetter gets the rest client
+type RESTClientGetter interface {
+	ToRESTConfig() (*rest.Config, error)
+	ToDiscoveryClient() (discovery.CachedDiscoveryInterface, error)
+	ToRESTMapper() (meta.RESTMapper, error)
+}
+
+// DebugLog sets the logger that writes debug strings
+type DebugLog func(format string, v ...interface{})
+
 // capabilities builds a Capabilities from discovery information.
 func (c *Configuration) getCapabilities() (*chartutil.Capabilities, error) {
 	if c.Capabilities != nil {
@@ -91,6 +103,8 @@ func (c *Configuration) getCapabilities() (*chartutil.Capabilities, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "could not get Kubernetes discovery client")
 	}
+	// force a discovery cache invalidation to always fetch the latest server version/capabilities.
+	dc.Invalidate()
 	kubeVersion, err := dc.ServerVersion()
 	if err != nil {
 		return nil, errors.Wrap(err, "could not get server version from Kubernetes")
@@ -195,8 +209,44 @@ func (c *Configuration) recordRelease(r *release.Release) {
 	}
 }
 
-type RESTClientGetter interface {
-	ToRESTConfig() (*rest.Config, error)
-	ToDiscoveryClient() (discovery.CachedDiscoveryInterface, error)
-	ToRESTMapper() (meta.RESTMapper, error)
+// InitActionConfig initializes the action configuration
+func (c *Configuration) Init(envSettings *cli.EnvSettings, allNamespaces bool, helmDriver string, log DebugLog) error {
+	getter := envSettings.RESTClientGetter()
+
+	kc := kube.New(getter)
+	kc.Log = log
+
+	clientset, err := kc.Factory.KubernetesClientSet()
+	if err != nil {
+		return err
+	}
+	var namespace string
+	if !allNamespaces {
+		namespace = envSettings.Namespace()
+	}
+
+	var store *storage.Storage
+	switch helmDriver {
+	case "secret", "secrets", "":
+		d := driver.NewSecrets(clientset.CoreV1().Secrets(namespace))
+		d.Log = log
+		store = storage.Init(d)
+	case "configmap", "configmaps":
+		d := driver.NewConfigMaps(clientset.CoreV1().ConfigMaps(namespace))
+		d.Log = log
+		store = storage.Init(d)
+	case "memory":
+		d := driver.NewMemory()
+		store = storage.Init(d)
+	default:
+		// Not sure what to do here.
+		panic("Unknown driver in HELM_DRIVER: " + helmDriver)
+	}
+
+	c.RESTClientGetter = getter
+	c.KubeClient = kc
+	c.Releases = store
+	c.Log = log
+
+	return nil
 }

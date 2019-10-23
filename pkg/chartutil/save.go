@@ -19,15 +19,15 @@ package chartutil
 import (
 	"archive/tar"
 	"compress/gzip"
+	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 
 	"github.com/pkg/errors"
 	"sigs.k8s.io/yaml"
 
-	"helm.sh/helm/pkg/chart"
+	"helm.sh/helm/v3/pkg/chart"
 )
 
 var headerBytes = []byte("+aHR0cHM6Ly95b3V0dS5iZS96OVV6MWljandyTQo=")
@@ -52,13 +52,15 @@ func SaveDir(c *chart.Chart, dest string) error {
 	if c.Values != nil {
 		vf := filepath.Join(outdir, ValuesfileName)
 		b, _ := yaml.Marshal(c.Values)
-		if err := ioutil.WriteFile(vf, b, 0644); err != nil {
+		if err := writeFile(vf, b); err != nil {
 			return err
 		}
 	}
 
-	for _, d := range []string{TemplatesDir, ChartsDir} {
-		if err := os.MkdirAll(filepath.Join(outdir, d), 0755); err != nil {
+	// Save values.schema.json if it exists
+	if c.Schema != nil {
+		filename := filepath.Join(outdir, SchemafileName)
+		if err := writeFile(filename, c.Schema); err != nil {
 			return err
 		}
 	}
@@ -67,13 +69,7 @@ func SaveDir(c *chart.Chart, dest string) error {
 	for _, o := range [][]*chart.File{c.Templates, c.Files} {
 		for _, f := range o {
 			n := filepath.Join(outdir, f.Name)
-
-			d := filepath.Dir(n)
-			if err := os.MkdirAll(d, 0755); err != nil {
-				return err
-			}
-
-			if err := ioutil.WriteFile(n, f.Data, 0644); err != nil {
+			if err := writeFile(n, f.Data); err != nil {
 				return err
 			}
 		}
@@ -84,7 +80,7 @@ func SaveDir(c *chart.Chart, dest string) error {
 	for _, dep := range c.Dependencies() {
 		// Here, we write each dependency as a tar file.
 		if _, err := Save(dep, base); err != nil {
-			return err
+			return errors.Wrapf(err, "saving %s", dep.ChartFullPath())
 		}
 	}
 	return nil
@@ -99,13 +95,6 @@ func SaveDir(c *chart.Chart, dest string) error {
 //
 // This returns the absolute path to the chart archive file.
 func Save(c *chart.Chart, outDir string) (string, error) {
-	// Create archive
-	if fi, err := os.Stat(outDir); err != nil {
-		return "", err
-	} else if !fi.IsDir() {
-		return "", errors.Errorf("location %s is not a directory", outDir)
-	}
-
 	if err := c.Validate(); err != nil {
 		return "", errors.Wrap(err, "chart validation")
 	}
@@ -113,7 +102,7 @@ func Save(c *chart.Chart, outDir string) (string, error) {
 	filename := fmt.Sprintf("%s-%s.tgz", c.Name(), c.Metadata.Version)
 	filename = filepath.Join(outDir, filename)
 	if stat, err := os.Stat(filepath.Dir(filename)); os.IsNotExist(err) {
-		if err := os.MkdirAll(filepath.Dir(filename), 0755); !os.IsExist(err) {
+		if err := os.MkdirAll(filepath.Dir(filename), 0755); err != nil {
 			return "", err
 		}
 	} else if !stat.IsDir() {
@@ -144,8 +133,9 @@ func Save(c *chart.Chart, outDir string) (string, error) {
 
 	if err := writeTarContents(twriter, c, ""); err != nil {
 		rollback = true
+		return filename, err
 	}
-	return filename, err
+	return filename, nil
 }
 
 func writeTarContents(out *tar.Writer, c *chart.Chart, prefix string) error {
@@ -156,7 +146,7 @@ func writeTarContents(out *tar.Writer, c *chart.Chart, prefix string) error {
 	if err != nil {
 		return err
 	}
-	if err := writeToTar(out, base+"/Chart.yaml", cdata); err != nil {
+	if err := writeToTar(out, filepath.Join(base, ChartfileName), cdata); err != nil {
 		return err
 	}
 
@@ -165,8 +155,18 @@ func writeTarContents(out *tar.Writer, c *chart.Chart, prefix string) error {
 	if err != nil {
 		return err
 	}
-	if err := writeToTar(out, base+"/values.yaml", ydata); err != nil {
+	if err := writeToTar(out, filepath.Join(base, ValuesfileName), ydata); err != nil {
 		return err
+	}
+
+	// Save values.schema.json if it exists
+	if c.Schema != nil {
+		if !json.Valid(c.Schema) {
+			return errors.New("Invalid JSON in " + SchemafileName)
+		}
+		if err := writeToTar(out, filepath.Join(base, SchemafileName), c.Schema); err != nil {
+			return err
+		}
 	}
 
 	// Save templates
@@ -187,7 +187,7 @@ func writeTarContents(out *tar.Writer, c *chart.Chart, prefix string) error {
 
 	// Save dependencies
 	for _, dep := range c.Dependencies() {
-		if err := writeTarContents(out, dep, base+"/charts"); err != nil {
+		if err := writeTarContents(out, dep, filepath.Join(base, ChartsDir)); err != nil {
 			return err
 		}
 	}
@@ -199,7 +199,7 @@ func writeToTar(out *tar.Writer, name string, body []byte) error {
 	// TODO: Do we need to create dummy parent directory names if none exist?
 	h := &tar.Header{
 		Name: name,
-		Mode: 0755,
+		Mode: 0644,
 		Size: int64(len(body)),
 	}
 	if err := out.WriteHeader(h); err != nil {

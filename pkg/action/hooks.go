@@ -22,7 +22,8 @@ import (
 
 	"github.com/pkg/errors"
 
-	"helm.sh/helm/pkg/release"
+	"helm.sh/helm/v3/pkg/release"
+	helmtime "helm.sh/helm/v3/pkg/time"
 )
 
 // execHook executes all of the hooks for the given hook event.
@@ -40,18 +41,27 @@ func (cfg *Configuration) execHook(rl *release.Release, hook release.HookEvent, 
 	sort.Sort(hookByWeight(executingHooks))
 
 	for _, h := range executingHooks {
+		// Set default delete policy to before-hook-creation
+		if h.DeletePolicies == nil || len(h.DeletePolicies) == 0 {
+			// TODO(jlegrone): Only apply before-hook-creation delete policy to run to completion
+			//                 resources. For all other resource types update in place if a
+			//                 resource with the same name already exists and is owned by the
+			//                 current release.
+			h.DeletePolicies = []release.HookDeletePolicy{release.HookBeforeHookCreation}
+		}
+
 		if err := cfg.deleteHookByPolicy(h, release.HookBeforeHookCreation); err != nil {
 			return err
 		}
 
-		resources, err := cfg.KubeClient.Build(bytes.NewBufferString(h.Manifest))
+		resources, err := cfg.KubeClient.Build(bytes.NewBufferString(h.Manifest), true)
 		if err != nil {
 			return errors.Wrapf(err, "unable to build kubernetes object for %s hook %s", hook, h.Path)
 		}
 
 		// Record the time at which the hook was applied to the cluster
 		h.LastRun = release.HookExecution{
-			StartedAt: time.Now(),
+			StartedAt: helmtime.Now(),
 			Phase:     release.HookPhaseRunning,
 		}
 		cfg.recordRelease(rl)
@@ -63,7 +73,7 @@ func (cfg *Configuration) execHook(rl *release.Release, hook release.HookEvent, 
 
 		// Create hook resources
 		if _, err := cfg.KubeClient.Create(resources); err != nil {
-			h.LastRun.CompletedAt = time.Now()
+			h.LastRun.CompletedAt = helmtime.Now()
 			h.LastRun.Phase = release.HookPhaseFailed
 			return errors.Wrapf(err, "warning: Hook %s %s failed", hook, h.Path)
 		}
@@ -71,7 +81,7 @@ func (cfg *Configuration) execHook(rl *release.Release, hook release.HookEvent, 
 		// Watch hook resources until they have completed
 		err = cfg.KubeClient.WatchUntilReady(resources, timeout)
 		// Note the time of success/failure
-		h.LastRun.CompletedAt = time.Now()
+		h.LastRun.CompletedAt = helmtime.Now()
 		// Mark hook as succeeded or failed
 		if err != nil {
 			h.LastRun.Phase = release.HookPhaseFailed
@@ -110,8 +120,13 @@ func (x hookByWeight) Less(i, j int) bool {
 
 // deleteHookByPolicy deletes a hook if the hook policy instructs it to
 func (cfg *Configuration) deleteHookByPolicy(h *release.Hook, policy release.HookDeletePolicy) error {
+	// Never delete CustomResourceDefinitions; this could cause lots of
+	// cascading garbage collection.
+	if h.Kind == "CustomResourceDefinition" {
+		return nil
+	}
 	if hookHasDeletePolicy(h, policy) {
-		resources, err := cfg.KubeClient.Build(bytes.NewBufferString(h.Manifest))
+		resources, err := cfg.KubeClient.Build(bytes.NewBufferString(h.Manifest), false)
 		if err != nil {
 			return errors.Wrapf(err, "unable to build kubernetes object for deleting hook %s", h.Path)
 		}

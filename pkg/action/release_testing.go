@@ -17,24 +17,24 @@ limitations under the License.
 package action
 
 import (
-	"bytes"
 	"fmt"
-	"strings"
+	"io"
 	"time"
 
 	"github.com/pkg/errors"
+	v1 "k8s.io/api/core/v1"
 
-	"helm.sh/helm/pkg/release"
+	"helm.sh/helm/v3/pkg/release"
 )
 
 // ReleaseTesting is the action for testing a release.
 //
 // It provides the implementation of 'helm test'.
 type ReleaseTesting struct {
-	cfg *Configuration
-
+	cfg     *Configuration
 	Timeout time.Duration
-	Cleanup bool
+	// Used for fetching logs from test pods
+	Namespace string
 }
 
 // NewReleaseTesting creates a new ReleaseTesting object with the given configuration.
@@ -45,39 +45,55 @@ func NewReleaseTesting(cfg *Configuration) *ReleaseTesting {
 }
 
 // Run executes 'helm test' against the given release.
-func (r *ReleaseTesting) Run(name string) error {
+func (r *ReleaseTesting) Run(name string) (*release.Release, error) {
+	if err := r.cfg.KubeClient.IsReachable(); err != nil {
+		return nil, err
+	}
+
 	if err := validateReleaseName(name); err != nil {
-		return errors.Errorf("releaseTest: Release name is invalid: %s", name)
+		return nil, errors.Errorf("releaseTest: Release name is invalid: %s", name)
 	}
 
 	// finds the non-deleted release with the given name
 	rel, err := r.cfg.Releases.Last(name)
 	if err != nil {
-		return err
+		return rel, err
 	}
 
 	if err := r.cfg.execHook(rel, release.HookTest, r.Timeout); err != nil {
 		r.cfg.Releases.Update(rel)
-		return err
+		return rel, err
 	}
 
-	if r.Cleanup {
-		var manifestsToDelete strings.Builder
-		for _, h := range rel.Hooks {
-			for _, e := range h.Events {
-				if e == release.HookTest {
-					fmt.Fprintf(&manifestsToDelete, "\n---\n%s", h.Manifest)
+	return rel, r.cfg.Releases.Update(rel)
+}
+
+// GetPodLogs will write the logs for all test pods in the given release into
+// the given writer. These can be immediately output to the user or captured for
+// other uses
+func (r *ReleaseTesting) GetPodLogs(out io.Writer, rel *release.Release) error {
+	client, err := r.cfg.KubernetesClientSet()
+	if err != nil {
+		return errors.Wrap(err, "unable to get kubernetes client to fetch pod logs")
+	}
+
+	for _, h := range rel.Hooks {
+		for _, e := range h.Events {
+			if e == release.HookTest {
+				req := client.CoreV1().Pods(r.Namespace).GetLogs(h.Name, &v1.PodLogOptions{})
+				logReader, err := req.Stream()
+				if err != nil {
+					return errors.Wrapf(err, "unable to get pod logs for %s", h.Name)
+				}
+
+				fmt.Fprintf(out, "POD LOGS: %s\n", h.Name)
+				_, err = io.Copy(out, logReader)
+				fmt.Fprintln(out)
+				if err != nil {
+					return errors.Wrapf(err, "unable to write pod logs for %s", h.Name)
 				}
 			}
 		}
-		hooks, err := r.cfg.KubeClient.Build(bytes.NewBufferString(manifestsToDelete.String()))
-		if err != nil {
-			return fmt.Errorf("unable to build test hooks: %v", err)
-		}
-		if _, errs := r.cfg.KubeClient.Delete(hooks); errs != nil {
-			return fmt.Errorf("unable to delete test hooks: %v", joinErrors(errs))
-		}
 	}
-
-	return r.cfg.Releases.Update(rel)
+	return nil
 }

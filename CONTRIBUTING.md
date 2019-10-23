@@ -1,39 +1,95 @@
 # Contributing Guidelines
 
-The Kubernetes Helm project accepts contributions via GitHub pull requests. This document outlines the process to help get your contribution accepted.
+The Helm project accepts contributions via GitHub pull requests. This document outlines the process to help get your contribution accepted.
 
 ## Reporting a Security Issue
 
 Most of the time, when you find a bug in Helm, it should be reported
 using [GitHub issues](https://github.com/helm/helm/issues). However, if
 you are reporting a _security vulnerability_, please email a report to
-[helm-security@deis.com](mailto:helm-security@deis.com). This will give
+[cncf-kubernetes-helm-security@lists.cncf.io](mailto:cncf-kubernetes-helm-security@lists.cncf.io). This will give
 us a chance to try to fix the issue before it is exploited in the wild.
 
-## Contributor License Agreements
+## Sign Your Work
 
-We'd love to accept your patches! Before we can take them, we have to jump a
-couple of legal hurdles.
+The sign-off is a simple line at the end of the explanation for a commit. All
+commits needs to be signed. Your signature certifies that you wrote the patch or
+otherwise have the right to contribute the material. The rules are pretty simple,
+if you can certify the below (from [developercertificate.org](https://developercertificate.org/)):
 
-The Cloud Native Computing Foundation (CNCF) CLA [must be signed](https://github.com/kubernetes/community/blob/master/CLA.md) by all contributors.
-Please fill out either the individual or corporate Contributor License
-Agreement (CLA).
+```
+Developer Certificate of Origin
+Version 1.1
 
-Once you are CLA'ed, we'll be able to accept your pull requests. For any issues that you face during this process,
-please add a comment [here](https://github.com/kubernetes/kubernetes/issues/27796) explaining the issue and we will help get it sorted out.
+Copyright (C) 2004, 2006 The Linux Foundation and its contributors.
+1 Letterman Drive
+Suite D4700
+San Francisco, CA, 94129
 
-***NOTE***: Only original source code from you and other people that have
-signed the CLA can be accepted into the repository. This policy does not
-apply to [third_party](third_party/) and [vendor](vendor/).
+Everyone is permitted to copy and distribute verbatim copies of this
+license document, but changing it is not allowed.
+
+Developer's Certificate of Origin 1.1
+
+By making a contribution to this project, I certify that:
+
+(a) The contribution was created in whole or in part by me and I
+    have the right to submit it under the open source license
+    indicated in the file; or
+
+(b) The contribution is based upon previous work that, to the best
+    of my knowledge, is covered under an appropriate open source
+    license and I have the right under that license to submit that
+    work with modifications, whether created in whole or in part
+    by me, under the same open source license (unless I am
+    permitted to submit under a different license), as indicated
+    in the file; or
+
+(c) The contribution was provided directly to me by some other
+    person who certified (a), (b) or (c) and I have not modified
+    it.
+
+(d) I understand and agree that this project and the contribution
+    are public and that a record of the contribution (including all
+    personal information I submit with it, including my sign-off) is
+    maintained indefinitely and may be redistributed consistent with
+    this project or the open source license(s) involved.
+```
+
+Then you just add a line to every git commit message:
+
+    Signed-off-by: Joe Smith <joe.smith@example.com>
+
+Use your real name (sorry, no pseudonyms or anonymous contributions.)
+
+If you set your `user.name` and `user.email` git configs, you can sign your
+commit automatically with `git commit -s`.
+
+Note: If your git config information is set properly then viewing the
+ `git log` information for your commit will look something like this:
+
+```
+Author: Joe Smith <joe.smith@example.com>
+Date:   Thu Feb 2 11:41:15 2018 -0800
+
+    Update README
+
+    Signed-off-by: Joe Smith <joe.smith@example.com>
+```
+
+Notice the `Author` and `Signed-off-by` lines match. If they don't
+your PR will be rejected by the automated DCO check.
 
 ## Support Channels
 
 Whether you are a user or contributor, official support channels include:
 
-- GitHub [issues](https://github.com/helm/helm/issues/new)
-- Slack: #Helm room in the [Kubernetes Slack](http://slack.kubernetes.io/)
+- [Issues](https://github.com/helm/helm/issues)
+- Slack:
+  - User: [#helm-users](https://kubernetes.slack.com/messages/C0NH30761/details/)
+  - Contributor: [#helm-dev](https://kubernetes.slack.com/messages/C51E88VDG/)
 
-Before opening a new issue or submitting a new pull request, it's helpful to search the project - it's likely that another user has already reported the issue you're facing, or it's a known issue that we're already aware of.
+Before opening a new issue or submitting a new pull request, it's helpful to search the project - it's likely that another user has already reported the issue you're facing, or it's a known issue that we're already aware of. It is also worth asking on the Slack channels.
 
 ## Milestones
 
@@ -53,9 +109,9 @@ An issue that we are not sure we will be doing will not be added to any mileston
 
 A milestone (and hence release) is considered done when all outstanding issues/PRs have been closed or moved to another milestone.
 
-## Semver
+## Semantic Versioning
 
-Helm maintains a strong commitment to backward compatibility. All of our changes to protocols and formats are backward compatible from Helm 3.0 until Helm 4.0. No features, flags, or commands are removed or substantially modified (other than bug fixes).
+Helm maintains a strong commitment to backward compatibility. All of our changes to protocols and formats are backward compatible from one major release to the next. No features, flags, or commands are removed or substantially modified (unless we need to fix a security issue).
 
 We also try very hard to not change publicly accessible Go library definitions inside of the `pkg/` directory of our source code.
 
@@ -66,6 +122,16 @@ For a quick summary of our backward compatibility guidelines for releases betwee
 - Any chart that worked on a previous version of Helm 3 MUST work on a new version of Helm 3 (barring the cases where (a) Kubernetes itself changed, and (b) the chart worked because it exploited a bug)
 - Chart repository functionality MUST be backward compatible
 - Go libraries inside of `pkg/` SHOULD remain backward compatible, though code inside of `cmd/` and `internal/` may be changed from release to release without notice.
+
+## Support Contract for Helm 2
+
+With Helm 2's current release schedule, we want to take into account any migration issues for users due to the upcoming holiday shopping season and tax season. We also want to clarify what actions may occur after the support contract ends for Helm 2, so that users will not be surprised or caught off guard.
+
+After Helm 2.15.0 is released, Helm 2 will go into "maintenance mode". We will continue to accept bug fixes and fix any security issues that arise, but no new features will be accepted for Helm 2. All feature development will be moved over to Helm 3.
+
+6 months after Helm 3.0.0's public release, Helm 2 will stop accepting bug fixes. Only security issues will be accepted.
+
+12 months after Helm 3.0.0's public release, support for Helm 2 will formally end. Download links for the Helm 2 client through Google Cloud Storage, the Docker image for Tiller stored in Google Container Registry, and the Google Cloud buckets for the stable and incubator chart repositories may no longer work at any point. Client downloads through `get.helm.sh` will continue to work, and we will distribute a Tiller image that will be made available at an alternative location which can be updated with `helm init --tiller-image`.
 
 ## Issues
 
@@ -98,7 +164,7 @@ contributing to Helm. All issue types follow the same general lifecycle. Differe
 1. Issue creation
 2. Triage
     - The maintainer in charge of triaging will apply the proper labels for the issue. This
-    includes labels for priority, type, and metadata (such as "good first issue"). The only issue
+    includes labels for priority, type, and metadata (such as `good first issue`). The only issue
     priority we will be tracking is whether or not the issue is "critical." If additional
     levels are needed in the future, we will add them.
     - (If needed) Clean up the title to succinctly and clearly state the issue. Also ensure
@@ -126,27 +192,29 @@ Coding conventions and standards are explained in the [official developer docs](
 
 ## Pull Requests
 
-Like any good open source project, we use Pull Requests to track code changes.
+Like any good open source project, we use Pull Requests (PRs) to track code changes.
 
 ### PR Lifecycle
 
 1. PR creation
+    - PRs are usually created to fix or else be a subset of other PRs that fix a particular issue.
     - We more than welcome PRs that are currently in progress. They are a great way to keep track of
     important work that is in-flight, but useful for others to see. If a PR is a work in progress,
-    it **must** be prefaced with "WIP: [the rest of the title]". Once the PR is ready for review,
-    remove "WIP" from the title.
-    - It is preferred, but not required, to have a PR tied to a specific issue.
+    it **must** be prefaced with "WIP: [title]". Once the PR is ready for review, remove "WIP" from
+    the title.
+    - It is preferred, but not required, to have a PR tied to a specific issue. There can be
+    circumstances where if it is a quick fix then an issue might be overkill. The details provided
+    in the PR description would suffice in this case.
 2. Triage
     - The maintainer in charge of triaging will apply the proper labels for the issue. This should
     include at least a size label, `bug` or `feature`, and `awaiting review` once all labels are applied.
-    See the [Labels section](#labels) for full details on the definitions of labels
+    See the [Labels section](#labels) for full details on the definitions of labels.
     - Add the PR to the correct milestone. This should be the same as the issue the PR closes.
 3. Assigning reviews
     - Once a review has the `awaiting review` label, maintainers will review them as schedule permits.
     The maintainer who takes the issue should self-request a review.
-    - Reviews from others in the community, especially those who have encountered a bug or have
-    requested a feature, are highly encouraged, but not required. Maintainer reviews **are** required
-    before any merge
+    - Any PR with the `size/large` label requires 2 review approvals from maintainers before it can be
+    merged. Those with `size/medium` or `size/small` are per the judgement of the maintainers.
 4. Reviewing/Discussion
     - All reviews will be completed using Github review tool.
     - A "Comment" review should be used when there are questions about the code that should be
@@ -161,7 +229,7 @@ Like any good open source project, we use Pull Requests to track code changes.
 7. Merge or close
     - PRs should stay open until merged or if they have not been active for more than 30 days.
     This will help keep the PR queue to a manageable size and reduce noise. Should the PR need
-    to stay open (like in the case of a WIP), the `keep open` or `WIP` label can be added.
+    to stay open (like in the case of a WIP), the `keep open` label can be added.
     - Before merging a PR, refer to the topic on [Size Labels](#size-labels) below to determine if
       the PR requires more than one LGTM to merge.
     - If the owner of the PR is listed in the `OWNERS` file, that user **must** merge their own PRs
@@ -177,7 +245,7 @@ Documentation PRs will follow the same lifecycle as other PRs. They will also be
 ## The Triager
 
 Each week, one of the core maintainers will serve as the designated "triager" starting after the
-public standup meetings on Thursday. This person will be in charge triaging new PRs and issues
+public stand-up meetings on Thursday. This person will be in charge triaging new PRs and issues
 throughout the work week.
 
 ## Labels

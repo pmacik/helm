@@ -22,14 +22,14 @@ import (
 	"os"
 	"syscall"
 
-	"github.com/Masterminds/semver"
+	"github.com/Masterminds/semver/v3"
 	"github.com/pkg/errors"
 	"golang.org/x/crypto/ssh/terminal"
 
-	"helm.sh/helm/pkg/chart"
-	"helm.sh/helm/pkg/chart/loader"
-	"helm.sh/helm/pkg/chartutil"
-	"helm.sh/helm/pkg/provenance"
+	"helm.sh/helm/v3/pkg/chart"
+	"helm.sh/helm/v3/pkg/chart/loader"
+	"helm.sh/helm/v3/pkg/chartutil"
+	"helm.sh/helm/v3/pkg/provenance"
 )
 
 // Package is the action for packaging a chart.
@@ -43,6 +43,9 @@ type Package struct {
 	AppVersion       string
 	Destination      string
 	DependencyUpdate bool
+
+	RepositoryConfig string
+	RepositoryCache  string
 }
 
 // NewPackage creates a new Package object with the given configuration.
@@ -131,7 +134,7 @@ func (p *Package) Clearsign(filename string) error {
 		return err
 	}
 
-	return ioutil.WriteFile(filename+".prov", []byte(sig), 0755)
+	return ioutil.WriteFile(filename+".prov", []byte(sig), 0644)
 }
 
 // promptUser implements provenance.PassphraseFetcher

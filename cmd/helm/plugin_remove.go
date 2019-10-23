@@ -24,8 +24,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 
-	"helm.sh/helm/pkg/helmpath"
-	"helm.sh/helm/pkg/plugin"
+	"helm.sh/helm/v3/pkg/plugin"
 )
 
 type pluginRemoveOptions struct {
@@ -35,8 +34,9 @@ type pluginRemoveOptions struct {
 func newPluginRemoveCmd(out io.Writer) *cobra.Command {
 	o := &pluginRemoveOptions{}
 	cmd := &cobra.Command{
-		Use:   "remove <plugin>...",
-		Short: "remove one or more Helm plugins",
+		Use:     "remove <plugin>...",
+		Aliases: []string{"rm"},
+		Short:   "remove one or more Helm plugins",
 		PreRunE: func(cmd *cobra.Command, args []string) error {
 			return o.complete(args)
 		},
@@ -56,8 +56,8 @@ func (o *pluginRemoveOptions) complete(args []string) error {
 }
 
 func (o *pluginRemoveOptions) run(out io.Writer) error {
-	debug("loading installed plugins from %s", helmpath.Plugins())
-	plugins, err := findPlugins(helmpath.Plugins())
+	debug("loading installed plugins from %s", settings.PluginsDirectory)
+	plugins, err := findPlugins(settings.PluginsDirectory)
 	if err != nil {
 		return err
 	}

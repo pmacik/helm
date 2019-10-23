@@ -18,10 +18,10 @@ package main
 
 import (
 	"testing"
-	"time"
 
-	"helm.sh/helm/pkg/chart"
-	"helm.sh/helm/pkg/release"
+	"helm.sh/helm/v3/pkg/chart"
+	"helm.sh/helm/v3/pkg/release"
+	"helm.sh/helm/v3/pkg/time"
 )
 
 func TestListCmd(t *testing.T) {
@@ -34,8 +34,9 @@ func TestListCmd(t *testing.T) {
 	timestamp4 := time.Unix(sampleTimeSeconds+4, 0).UTC()
 	chartInfo := &chart.Chart{
 		Metadata: &chart.Metadata{
-			Name:    "chickadee",
-			Version: "1.0.0",
+			Name:       "chickadee",
+			Version:    "1.0.0",
+			AppVersion: "0.0.1",
 		},
 	}
 

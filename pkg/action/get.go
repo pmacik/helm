@@ -17,7 +17,7 @@ limitations under the License.
 package action
 
 import (
-	"helm.sh/helm/pkg/release"
+	"helm.sh/helm/v3/pkg/release"
 )
 
 // Get is the action for checking a given release's information.
@@ -38,5 +38,9 @@ func NewGet(cfg *Configuration) *Get {
 
 // Run executes 'helm get' against the given release.
 func (g *Get) Run(name string) (*release.Release, error) {
+	if err := g.cfg.KubeClient.IsReachable(); err != nil {
+		return nil, err
+	}
+
 	return g.cfg.releaseContent(name, g.Version)
 }

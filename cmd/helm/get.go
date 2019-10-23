@@ -21,45 +21,33 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"helm.sh/helm/cmd/helm/require"
-	"helm.sh/helm/pkg/action"
+	"helm.sh/helm/v3/cmd/helm/require"
+	"helm.sh/helm/v3/pkg/action"
 )
 
 var getHelp = `
-This command shows the details of a named release.
-
-It can be used to get extended information about the release, including:
+This command consists of multiple subcommands which can be used to
+get extended information about the release, including:
 
   - The values used to generate the release
-  - The chart used to generate the release
   - The generated manifest file
-
-By default, this prints a human readable collection of information about the
-chart, the supplied values, and the generated manifest file.
+  - The notes provided by the chart of the release
+  - The hooks associated with the release
 `
 
 func newGetCmd(cfg *action.Configuration, out io.Writer) *cobra.Command {
-	client := action.NewGet(cfg)
-
 	cmd := &cobra.Command{
-		Use:   "get RELEASE_NAME",
-		Short: "download a named release",
+		Use:   "get",
+		Short: "download extended information of a named release",
 		Long:  getHelp,
-		Args:  require.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			res, err := client.Run(args[0])
-			if err != nil {
-				return err
-			}
-			return printRelease(out, res)
-		},
+		Args:  require.NoArgs,
 	}
 
-	cmd.Flags().IntVar(&client.Version, "revision", 0, "get the named release with revision")
-
+	cmd.AddCommand(newGetAllCmd(cfg, out))
 	cmd.AddCommand(newGetValuesCmd(cfg, out))
 	cmd.AddCommand(newGetManifestCmd(cfg, out))
 	cmd.AddCommand(newGetHooksCmd(cfg, out))
+	cmd.AddCommand(newGetNotesCmd(cfg, out))
 
 	return cmd
 }

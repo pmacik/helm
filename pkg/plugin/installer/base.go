@@ -13,13 +13,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package installer // import "helm.sh/helm/pkg/plugin/installer"
+package installer // import "helm.sh/helm/v3/pkg/plugin/installer"
 
 import (
 	"os"
 	"path/filepath"
 
-	"helm.sh/helm/pkg/helmpath"
+	"helm.sh/helm/v3/pkg/helmpath"
 )
 
 type base struct {
@@ -42,5 +42,5 @@ func (b *base) Path() string {
 	if b.Source == "" {
 		return ""
 	}
-	return filepath.Join(helmpath.Plugins(), filepath.Base(b.Source))
+	return helmpath.DataPath("plugins", filepath.Base(b.Source))
 }

@@ -21,18 +21,18 @@ import (
 	"io/ioutil"
 	"path/filepath"
 	"testing"
-	"time"
 
 	dockerauth "github.com/deislabs/oras/pkg/auth/docker"
 	fakeclientset "k8s.io/client-go/kubernetes/fake"
 
-	"helm.sh/helm/internal/experimental/registry"
-	"helm.sh/helm/pkg/chart"
-	"helm.sh/helm/pkg/chartutil"
-	kubefake "helm.sh/helm/pkg/kube/fake"
-	"helm.sh/helm/pkg/release"
-	"helm.sh/helm/pkg/storage"
-	"helm.sh/helm/pkg/storage/driver"
+	"helm.sh/helm/v3/internal/experimental/registry"
+	"helm.sh/helm/v3/pkg/chart"
+	"helm.sh/helm/v3/pkg/chartutil"
+	kubefake "helm.sh/helm/v3/pkg/kube/fake"
+	"helm.sh/helm/v3/pkg/release"
+	"helm.sh/helm/v3/pkg/storage"
+	"helm.sh/helm/v3/pkg/storage/driver"
+	"helm.sh/helm/v3/pkg/time"
 )
 
 var verbose = flag.Bool("test.log", false, "enable test logging")
@@ -166,6 +166,35 @@ func buildChart(opts ...chartOption) *chart.Chart {
 	return c.Chart
 }
 
+func withName(name string) chartOption {
+	return func(opts *chartOptions) {
+		opts.Metadata.Name = name
+	}
+}
+
+func withSampleValues() chartOption {
+	values := map[string]interface{}{
+		"someKey": "someValue",
+		"nestedKey": map[string]interface{}{
+			"simpleKey": "simpleValue",
+			"anotherNestedKey": map[string]interface{}{
+				"yetAnotherNestedKey": map[string]interface{}{
+					"youReadyForAnotherNestedKey": "No",
+				},
+			},
+		},
+	}
+	return func(opts *chartOptions) {
+		opts.Values = values
+	}
+}
+
+func withValues(values map[string]interface{}) chartOption {
+	return func(opts *chartOptions) {
+		opts.Values = values
+	}
+}
+
 func withNotes(notes string) chartOption {
 	return func(opts *chartOptions) {
 		opts.Templates = append(opts.Templates, &chart.File{
@@ -178,6 +207,12 @@ func withNotes(notes string) chartOption {
 func withDependency(dependencyOpts ...chartOption) chartOption {
 	return func(opts *chartOptions) {
 		opts.AddDependency(buildChart(dependencyOpts...))
+	}
+}
+
+func withMetadataDependency(dependency chart.Dependency) chartOption {
+	return func(opts *chartOptions) {
+		opts.Metadata.Dependencies = append(opts.Metadata.Dependencies, &dependency)
 	}
 }
 

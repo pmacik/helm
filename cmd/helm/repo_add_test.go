@@ -18,47 +18,30 @@ package main
 
 import (
 	"fmt"
-	"os"
+	"io/ioutil"
+	"path/filepath"
+	"sync"
 	"testing"
 
-	"helm.sh/helm/internal/test/ensure"
-	"helm.sh/helm/pkg/helmpath"
-	"helm.sh/helm/pkg/repo"
-	"helm.sh/helm/pkg/repo/repotest"
+	"gopkg.in/yaml.v2"
+
+	"helm.sh/helm/v3/internal/test/ensure"
+	"helm.sh/helm/v3/pkg/repo"
+	"helm.sh/helm/v3/pkg/repo/repotest"
 )
 
 func TestRepoAddCmd(t *testing.T) {
-	defer resetEnv()()
-
-	ensure.HelmHome(t)
-	defer ensure.CleanHomeDirs(t)
-
 	srv, err := repotest.NewTempServer("testdata/testserver/*.*")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer srv.Stop()
 
-	repoFile := helmpath.RepositoryFile()
-	if _, err := os.Stat(repoFile); err != nil {
-		rf := repo.NewFile()
-		rf.Add(&repo.Entry{
-			Name: "charts",
-			URL:  "http://example.com/foo",
-		})
-		if err := rf.WriteFile(repoFile, 0644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if r, err := repo.LoadFile(repoFile); err == repo.ErrRepoOutOfDate {
-		if err := r.WriteFile(repoFile, 0644); err != nil {
-			t.Fatal(err)
-		}
-	}
+	repoFile := filepath.Join(ensure.TempDir(t), "repositories.yaml")
 
 	tests := []cmdTestCase{{
 		name:   "add a repository",
-		cmd:    fmt.Sprintf("repo add test-name %s", srv.URL()),
+		cmd:    fmt.Sprintf("repo add test-name %s --repository-config %s", srv.URL(), repoFile),
 		golden: "output/repo-add.txt",
 	}}
 
@@ -66,54 +49,99 @@ func TestRepoAddCmd(t *testing.T) {
 }
 
 func TestRepoAdd(t *testing.T) {
-	defer resetEnv()()
-
-	ensure.HelmHome(t)
-	defer ensure.CleanHomeDirs(t)
-
 	ts, err := repotest.NewTempServer("testdata/testserver/*.*")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ts.Stop()
 
-	repoFile := helmpath.RepositoryFile()
-	if _, err := os.Stat(repoFile); err != nil {
-		rf := repo.NewFile()
-		rf.Add(&repo.Entry{
-			Name: "charts",
-			URL:  "http://example.com/foo",
-		})
-		if err := rf.WriteFile(repoFile, 0644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if r, err := repo.LoadFile(repoFile); err == repo.ErrRepoOutOfDate {
-		if err := r.WriteFile(repoFile, 0644); err != nil {
-			t.Fatal(err)
-		}
-	}
+	repoFile := filepath.Join(ensure.TempDir(t), "repositories.yaml")
 
 	const testRepoName = "test-name"
 
-	if err := addRepository(testRepoName, ts.URL(), "", "", "", "", "", true); err != nil {
+	o := &repoAddOptions{
+		name:     testRepoName,
+		url:      ts.URL(),
+		noUpdate: true,
+		repoFile: repoFile,
+	}
+
+	if err := o.run(ioutil.Discard); err != nil {
 		t.Error(err)
 	}
 
-	f, err := repo.LoadFile(helmpath.RepositoryFile())
+	f, err := repo.LoadFile(repoFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !f.Has(testRepoName) {
+		t.Errorf("%s was not successfully inserted into %s", testRepoName, repoFile)
+	}
+
+	o.noUpdate = false
+
+	if err := o.run(ioutil.Discard); err != nil {
+		t.Errorf("Repository was not updated: %s", err)
+	}
+
+	if err := o.run(ioutil.Discard); err != nil {
+		t.Errorf("Duplicate repository name was added")
+	}
+}
+
+func TestRepoAddConcurrentGoRoutines(t *testing.T) {
+	const testName = "test-name"
+	repoFile := filepath.Join(ensure.TempDir(t), "repositories.yaml")
+	repoAddConcurrent(t, testName, repoFile)
+}
+
+func TestRepoAddConcurrentDirNotExist(t *testing.T) {
+	const testName = "test-name-2"
+	repoFile := filepath.Join(ensure.TempDir(t), "foo", "repositories.yaml")
+	repoAddConcurrent(t, testName, repoFile)
+}
+
+func repoAddConcurrent(t *testing.T, testName, repoFile string) {
+	ts, err := repotest.NewTempServer("testdata/testserver/*.*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ts.Stop()
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+	for i := 0; i < 3; i++ {
+		go func(name string) {
+			defer wg.Done()
+			o := &repoAddOptions{
+				name:     name,
+				url:      ts.URL(),
+				noUpdate: true,
+				repoFile: repoFile,
+			}
+			if err := o.run(ioutil.Discard); err != nil {
+				t.Error(err)
+			}
+		}(fmt.Sprintf("%s-%d", testName, i))
+	}
+	wg.Wait()
+
+	b, err := ioutil.ReadFile(repoFile)
 	if err != nil {
 		t.Error(err)
 	}
 
-	if !f.Has(testRepoName) {
-		t.Errorf("%s was not successfully inserted into %s", testRepoName, helmpath.RepositoryFile())
+	var f repo.File
+	if err := yaml.Unmarshal(b, &f); err != nil {
+		t.Error(err)
 	}
 
-	if err := addRepository(testRepoName, ts.URL(), "", "", "", "", "", false); err != nil {
-		t.Errorf("Repository was not updated: %s", err)
-	}
-
-	if err := addRepository(testRepoName, ts.URL(), "", "", "", "", "", false); err != nil {
-		t.Errorf("Duplicate repository name was added")
+	var name string
+	for i := 0; i < 3; i++ {
+		name = fmt.Sprintf("%s-%d", testName, i)
+		if !f.Has(name) {
+			t.Errorf("%s was not successfully inserted into %s: %s", name, repoFile, f.Repositories[0])
+		}
 	}
 }

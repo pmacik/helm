@@ -22,8 +22,9 @@ import (
 
 	"github.com/pkg/errors"
 
-	"helm.sh/helm/pkg/release"
-	"helm.sh/helm/pkg/releaseutil"
+	"helm.sh/helm/v3/pkg/release"
+	"helm.sh/helm/v3/pkg/releaseutil"
+	helmtime "helm.sh/helm/v3/pkg/time"
 )
 
 // Uninstall is the action for uninstalling releases.
@@ -47,6 +48,10 @@ func NewUninstall(cfg *Configuration) *Uninstall {
 
 // Run uninstalls the given release.
 func (u *Uninstall) Run(name string) (*release.UninstallReleaseResponse, error) {
+	if err := u.cfg.KubeClient.IsReachable(); err != nil {
+		return nil, err
+	}
+
 	if u.DryRun {
 		// In the dry run case, just see if the release exists
 		r, err := u.cfg.releaseContent(name, 0)
@@ -85,7 +90,7 @@ func (u *Uninstall) Run(name string) (*release.UninstallReleaseResponse, error) 
 
 	u.cfg.Log("uninstall: Deleting %s", name)
 	rel.Info.Status = release.StatusUninstalling
-	rel.Info.Deleted = time.Now()
+	rel.Info.Deleted = helmtime.Now()
 	rel.Info.Description = "Deletion in progress (or silently failed)"
 	res := &release.UninstallReleaseResponse{Release: rel}
 
@@ -184,7 +189,7 @@ func (u *Uninstall) deleteRelease(rel *release.Release) (string, []error) {
 	for _, file := range filesToDelete {
 		builder.WriteString("\n---\n" + file.Content)
 	}
-	resources, err := u.cfg.KubeClient.Build(strings.NewReader(builder.String()))
+	resources, err := u.cfg.KubeClient.Build(strings.NewReader(builder.String()), false)
 	if err != nil {
 		return "", []error{errors.Wrap(err, "unable to build kubernetes objects for delete")}
 	}

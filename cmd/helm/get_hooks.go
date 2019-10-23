@@ -22,8 +22,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"helm.sh/helm/cmd/helm/require"
-	"helm.sh/helm/pkg/action"
+	"helm.sh/helm/v3/cmd/helm/require"
+	"helm.sh/helm/v3/pkg/action"
 )
 
 const getHooksHelp = `
@@ -46,7 +46,7 @@ func newGetHooksCmd(cfg *action.Configuration, out io.Writer) *cobra.Command {
 				return err
 			}
 			for _, hook := range res.Hooks {
-				fmt.Fprintf(out, "---\n# %s\n%s", hook.Name, hook.Manifest)
+				fmt.Fprintf(out, "---\n# Source: %s\n%s\n", hook.Path, hook.Manifest)
 			}
 			return nil
 		},

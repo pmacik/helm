@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package storage // import "helm.sh/helm/pkg/storage"
+package storage // import "helm.sh/helm/v3/pkg/storage"
 
 import (
 	"fmt"
@@ -22,10 +22,17 @@ import (
 
 	"github.com/pkg/errors"
 
-	rspb "helm.sh/helm/pkg/release"
-	relutil "helm.sh/helm/pkg/releaseutil"
-	"helm.sh/helm/pkg/storage/driver"
+	rspb "helm.sh/helm/v3/pkg/release"
+	relutil "helm.sh/helm/v3/pkg/releaseutil"
+	"helm.sh/helm/v3/pkg/storage/driver"
 )
+
+// The type field of the Kubernetes storage object which stores the Helm release
+// version. It is modified slightly replacing the '/': sh.helm/release.v1
+// Note: The version 'v1' is incremented if the release object metadata is
+// modified between major releases.
+// This constant is used as a prefix for the Kubernetes storage object name.
+const HelmStorageType = "sh.helm.release.v1"
 
 // Storage represents a storage engine for a Release.
 type Storage struct {
@@ -205,11 +212,14 @@ func (s *Storage) Last(name string) (*rspb.Release, error) {
 	return h[0], nil
 }
 
-// makeKey concatenates a release name and version into
-// a string with format ```<release_name>#v<version>```.
+// makeKey concatenates the Kubernetes storage object type, a release name and version
+// into a string with format:```<helm_storage_type>.<release_name>.v<release_version>```.
+// The storage type is prepended to keep name uniqueness between different
+// release storage types. An example of clash when not using the type:
+// https://github.com/helm/helm/issues/6435.
 // This key is used to uniquely identify storage objects.
 func makeKey(rlsname string, version int) string {
-	return fmt.Sprintf("%s.v%d", rlsname, version)
+	return fmt.Sprintf("%s.%s.v%d", HelmStorageType, rlsname, version)
 }
 
 // Init initializes a new storage backend with the driver d.

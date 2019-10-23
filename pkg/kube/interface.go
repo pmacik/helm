@@ -51,11 +51,16 @@ type Interface interface {
 	//
 	// reader must contain a YAML stream (one or more YAML documents separated
 	// by "\n---\n")
-	Build(reader io.Reader) (ResourceList, error)
+	//
+	// Validates against OpenAPI schema if validate is true.
+	Build(reader io.Reader, validate bool) (ResourceList, error)
 
 	// WaitAndGetCompletedPodPhase waits up to a timeout until a pod enters a completed phase
 	// and returns said phase (PodSucceeded or PodFailed qualify).
 	WaitAndGetCompletedPodPhase(name string, timeout time.Duration) (v1.PodPhase, error)
+
+	// isReachable checks whether the client is able to connect to the cluster
+	IsReachable() error
 }
 
 var _ Interface = (*Client)(nil)

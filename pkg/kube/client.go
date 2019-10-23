@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package kube // import "helm.sh/helm/pkg/kube"
+package kube // import "helm.sh/helm/v3/pkg/kube"
 
 import (
 	"context"
@@ -23,13 +23,16 @@ import (
 	"io"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	jsonpatch "github.com/evanphx/json-patch"
 	"github.com/pkg/errors"
 	batch "k8s.io/api/batch/v1"
 	v1 "k8s.io/api/core/v1"
+	apiextv1beta1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1beta1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -37,8 +40,9 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/cli-runtime/pkg/resource"
+	"k8s.io/client-go/kubernetes/scheme"
 	watchtools "k8s.io/client-go/tools/watch"
-	cmdutil "k8s.io/kubernetes/pkg/kubectl/cmd/util"
+	cmdutil "k8s.io/kubectl/pkg/cmd/util"
 )
 
 // ErrNoObjectsVisited indicates that during a visit operation, no matching objects were found.
@@ -55,6 +59,11 @@ func New(getter genericclioptions.RESTClientGetter) *Client {
 	if getter == nil {
 		getter = genericclioptions.NewConfigFlags(true)
 	}
+	// Add CRDs to the scheme. They are missing by default.
+	if err := apiextv1beta1.AddToScheme(scheme.Scheme); err != nil {
+		// This should never happen.
+		panic(err)
+	}
 	return &Client{
 		Factory: cmdutil.NewFactory(getter),
 		Log:     nopLogger,
@@ -62,6 +71,16 @@ func New(getter genericclioptions.RESTClientGetter) *Client {
 }
 
 var nopLogger = func(_ string, _ ...interface{}) {}
+
+// IsReachable tests connectivity to the cluster
+func (c *Client) IsReachable() error {
+	client, _ := c.Factory.KubernetesClientSet()
+	_, err := client.ServerVersion()
+	if err != nil {
+		return errors.New("Kubernetes cluster unreachable")
+	}
+	return nil
+}
 
 // Create creates Kubernetes resources specified in the resource list.
 func (c *Client) Create(resources ResourceList) (*Result, error) {
@@ -103,18 +122,26 @@ func (c *Client) newBuilder() *resource.Builder {
 }
 
 // Build validates for Kubernetes objects and returns unstructured infos.
-func (c *Client) Build(reader io.Reader) (ResourceList, error) {
+func (c *Client) Build(reader io.Reader, validate bool) (ResourceList, error) {
+	schema, err := c.Factory.Validator(validate)
+	if err != nil {
+		return nil, err
+	}
 	result, err := c.newBuilder().
 		Unstructured().
+		Schema(schema).
 		Stream(reader, "").
 		Do().Infos()
 	return result, scrubValidationError(err)
 }
 
-// Update reads in the current configuration and a target configuration from io.reader
-// and creates resources that don't already exists, updates resources that have been modified
-// in the target configuration and deletes resources from the current configuration that are
-// not present in the target configuration.
+// Update takes the current list of objects and target list of objects and
+// creates resources that don't already exists, updates resources that have been
+// modified in the target configuration, and deletes resources from the current
+// configuration that are not present in the target configuration. If an error
+// occurs, a Result will still be returned with the error, containing all
+// resource updates, creations, and deletions that were attempted. These can be
+// used for cleanup or other logging purposes.
 func (c *Client) Update(original, target ResourceList, force bool) (*Result, error) {
 	updateErrors := []string{}
 	res := &Result{}
@@ -131,13 +158,13 @@ func (c *Client) Update(original, target ResourceList, force bool) (*Result, err
 				return errors.Wrap(err, "could not get information about the resource")
 			}
 
+			// Append the created resource to the results, even if something fails
+			res.Created = append(res.Created, info)
+
 			// Since the resource does not exist, create it.
 			if err := createResource(info); err != nil {
 				return errors.Wrap(err, "failed to create resource")
 			}
-
-			// Append the created resource to the results
-			res.Created = append(res.Created, info)
 
 			kind := info.Mapping.GroupVersionKind.Kind
 			c.Log("Created a new %s called %q\n", kind, info.Name)
@@ -162,18 +189,21 @@ func (c *Client) Update(original, target ResourceList, force bool) (*Result, err
 
 	switch {
 	case err != nil:
-		return nil, err
+		return res, err
 	case len(updateErrors) != 0:
-		return nil, errors.Errorf(strings.Join(updateErrors, " && "))
+		return res, errors.Errorf(strings.Join(updateErrors, " && "))
 	}
 
 	for _, info := range original.Difference(target) {
 		c.Log("Deleting %q in %s...", info.Name, info.Namespace)
+		res.Deleted = append(res.Deleted, info)
 		if err := deleteResource(info); err != nil {
-			c.Log("Failed to delete %q, err: %s", info.Name, err)
-		} else {
-			// Only append ones we succeeded in deleting
-			res.Deleted = append(res.Deleted, info)
+			if apierrors.IsNotFound(err) {
+				c.Log("Attempted to delete %q, but the resource was missing", info.Name)
+			} else {
+				c.Log("Failed to delete %q, err: %s", info.Name, err)
+				return res, errors.Wrapf(err, "Failed to delete %q", info.Name)
+			}
 		}
 	}
 	return res, nil
@@ -249,12 +279,33 @@ func perform(infos ResourceList, fn func(*resource.Info) error) error {
 		return ErrNoObjectsVisited
 	}
 
-	for _, info := range infos {
-		if err := fn(info); err != nil {
+	errs := make(chan error)
+	go batchPerform(infos, fn, errs)
+
+	for range infos {
+		err := <-errs
+		if err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func batchPerform(infos ResourceList, fn func(*resource.Info) error, errs chan<- error) {
+	var kind string
+	var wg sync.WaitGroup
+	for _, info := range infos {
+		currentKind := info.Object.GetObjectKind().GroupVersionKind().Kind
+		if kind != currentKind {
+			wg.Wait()
+			kind = currentKind
+		}
+		wg.Add(1)
+		go func(i *resource.Info) {
+			errs <- fn(i)
+			wg.Done()
+		}(info)
+	}
 }
 
 func createResource(info *resource.Info) error {
@@ -318,52 +369,43 @@ func createPatch(target *resource.Info, current runtime.Object) ([]byte, types.P
 }
 
 func updateResource(c *Client, target *resource.Info, currentObj runtime.Object, force bool) error {
+	var (
+		obj    runtime.Object
+		helper = resource.NewHelper(target.Client, target.Mapping)
+		kind   = target.Mapping.GroupVersionKind.Kind
+	)
+
 	patch, patchType, err := createPatch(target, currentObj)
 	if err != nil {
 		return errors.Wrap(err, "failed to create patch")
 	}
-	if patch == nil {
+
+	if patch == nil || string(patch) == "{}" {
 		c.Log("Looks like there are no changes for %s %q", target.Mapping.GroupVersionKind.Kind, target.Name)
 		// This needs to happen to make sure that tiller has the latest info from the API
 		// Otherwise there will be no labels and other functions that use labels will panic
 		if err := target.Get(); err != nil {
-			return errors.Wrap(err, "error trying to refresh resource information")
+			return errors.Wrap(err, "failed to refresh resource information")
 		}
+		return nil
+	}
+
+	// if --force is applied, attempt to replace the existing resource with the new object.
+	if force {
+		obj, err = helper.Replace(target.Namespace, target.Name, true, target.Object)
+		if err != nil {
+			return errors.Wrap(err, "failed to replace object")
+		}
+		log.Printf("Replaced %q with kind %s for kind %s\n", target.Name, currentObj.GetObjectKind().GroupVersionKind().Kind, kind)
 	} else {
 		// send patch to server
-		helper := resource.NewHelper(target.Client, target.Mapping)
-
-		obj, err := helper.Patch(target.Namespace, target.Name, patchType, patch, nil)
+		obj, err = helper.Patch(target.Namespace, target.Name, patchType, patch, nil)
 		if err != nil {
-			kind := target.Mapping.GroupVersionKind.Kind
 			log.Printf("Cannot patch %s: %q (%v)", kind, target.Name, err)
-
-			if force {
-				// Attempt to delete...
-				if err := deleteResource(target); err != nil {
-					return err
-				}
-				log.Printf("Deleted %s: %q", kind, target.Name)
-
-				// ... and recreate
-				if err := createResource(target); err != nil {
-					return errors.Wrap(err, "failed to recreate resource")
-				}
-				log.Printf("Created a new %s called %q\n", kind, target.Name)
-
-				// No need to refresh the target, as we recreated the resource based
-				// on it. In addition, it might not exist yet and a call to `Refresh`
-				// may fail.
-			} else {
-				log.Print("Use --force to force recreation of the resource")
-				return err
-			}
-		} else {
-			// When patch succeeds without needing to recreate, refresh target.
-			target.Refresh(obj, true)
 		}
 	}
 
+	target.Refresh(obj, true)
 	return nil
 }
 

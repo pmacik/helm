@@ -17,13 +17,10 @@ limitations under the License.
 package action
 
 import (
-	"fmt"
 	"regexp"
 
-	"github.com/gosuri/uitable"
-
-	"helm.sh/helm/pkg/release"
-	"helm.sh/helm/pkg/releaseutil"
+	"helm.sh/helm/v3/pkg/release"
+	"helm.sh/helm/v3/pkg/releaseutil"
 )
 
 // ListStates represents zero or more status codes that a list item may have set
@@ -140,6 +137,10 @@ func NewList(cfg *Configuration) *List {
 
 // Run executes the list command, returning a set of matches.
 func (l *List) Run() ([]*release.Release, error) {
+	if err := l.cfg.KubeClient.IsReachable(); err != nil {
+		return nil, err
+	}
+
 	var filter *regexp.Regexp
 	if l.Filter != "" {
 		var err error
@@ -166,6 +167,8 @@ func (l *List) Run() ([]*release.Release, error) {
 	if results == nil {
 		return results, nil
 	}
+
+	results = filterList(results)
 
 	// Unfortunately, we have to sort before truncating, which can incur substantial overhead
 	l.sort(results)
@@ -214,6 +217,30 @@ func (l *List) sort(rels []*release.Release) {
 	}
 }
 
+// filterList returns a list scrubbed of old releases.
+func filterList(rels []*release.Release) []*release.Release {
+	idx := map[string]int{}
+
+	for _, r := range rels {
+		name, version := r.Name, r.Version
+		if max, ok := idx[name]; ok {
+			// check if we have a greater version already
+			if max > version {
+				continue
+			}
+		}
+		idx[name] = version
+	}
+
+	uniq := make([]*release.Release, 0, len(idx))
+	for _, r := range rels {
+		if idx[r.Name] == r.Version {
+			uniq = append(uniq, r)
+		}
+	}
+	return uniq
+}
+
 // setStateMask calculates the state mask based on parameters.
 func (l *List) SetStateMask() {
 	if l.All {
@@ -247,22 +274,4 @@ func (l *List) SetStateMask() {
 	}
 
 	l.StateMask = state
-}
-
-func FormatList(rels []*release.Release) string {
-	table := uitable.New()
-	table.AddRow("NAME", "NAMESPACE", "REVISION", "UPDATED", "STATUS", "CHART")
-	for _, r := range rels {
-		md := r.Chart.Metadata
-		c := fmt.Sprintf("%s-%s", md.Name, md.Version)
-		t := "-"
-		if tspb := r.Info.LastDeployed; !tspb.IsZero() {
-			t = tspb.String()
-		}
-		s := r.Info.Status.String()
-		v := r.Version
-		n := r.Namespace
-		table.AddRow(r.Name, n, v, t, s, c)
-	}
-	return table.String()
 }

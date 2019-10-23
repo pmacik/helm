@@ -31,8 +31,8 @@ import (
 	"golang.org/x/crypto/openpgp/packet"
 	"sigs.k8s.io/yaml"
 
-	hapi "helm.sh/helm/pkg/chart"
-	"helm.sh/helm/pkg/chart/loader"
+	hapi "helm.sh/helm/v3/pkg/chart"
+	"helm.sh/helm/v3/pkg/chart/loader"
 )
 
 var defaultPGPConfig = packet.Config{
@@ -402,6 +402,8 @@ func DigestFile(filename string) (string, error) {
 // Helm uses SHA256 as its default hash for all non-cryptographic applications.
 func Digest(in io.Reader) (string, error) {
 	hash := crypto.SHA256.New()
-	io.Copy(hash, in)
+	if _, err := io.Copy(hash, in); err != nil {
+		return "", nil
+	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }

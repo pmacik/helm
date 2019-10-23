@@ -17,29 +17,63 @@ limitations under the License.
 package main
 
 import (
+	"fmt"
 	"io"
+	"time"
 
 	"github.com/spf13/cobra"
 
-	"helm.sh/helm/pkg/action"
+	"helm.sh/helm/v3/cmd/helm/require"
+	"helm.sh/helm/v3/pkg/action"
+	"helm.sh/helm/v3/pkg/cli/output"
 )
 
 const releaseTestHelp = `
-The test command consists of multiple subcommands around running tests on a release.
+The test command runs the tests for a release.
 
-Example usage:
-    $ helm test run [RELEASE]
-
+The argument this command takes is the name of a deployed release.
+The tests to be run are defined in the chart that was installed.
 `
 
 func newReleaseTestCmd(cfg *action.Configuration, out io.Writer) *cobra.Command {
+	client := action.NewReleaseTesting(cfg)
+	var outfmt = output.Table
+	var outputLogs bool
+
 	cmd := &cobra.Command{
-		Use:   "test",
-		Short: "test a release or cleanup test artifacts",
+		Use:   "test [RELEASE]",
+		Short: "run tests for a release",
 		Long:  releaseTestHelp,
+		Args:  require.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client.Namespace = settings.Namespace()
+			rel, runErr := client.Run(args[0])
+			// We only return an error if we weren't even able to get the
+			// release, otherwise we keep going so we can print status and logs
+			// if requested
+			if runErr != nil && rel == nil {
+				return runErr
+			}
+
+			if err := outfmt.Write(out, &statusPrinter{rel, settings.Debug}); err != nil {
+				return err
+			}
+
+			if outputLogs {
+				// Print a newline to stdout to separate the output
+				fmt.Fprintln(out)
+				if err := client.GetPodLogs(out, rel); err != nil {
+					return err
+				}
+			}
+
+			return runErr
+		},
 	}
-	cmd.AddCommand(
-		newReleaseTestRunCmd(cfg, out),
-	)
+
+	f := cmd.Flags()
+	f.DurationVar(&client.Timeout, "timeout", 300*time.Second, "time to wait for any individual Kubernetes operation (like Jobs for hooks)")
+	f.BoolVar(&outputLogs, "logs", false, "Dump the logs from test pods (this runs after all tests are complete, but before any cleanup)")
+
 	return cmd
 }

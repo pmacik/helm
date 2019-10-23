@@ -13,7 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package installer // import "helm.sh/helm/pkg/plugin/installer"
+package installer // import "helm.sh/helm/v3/pkg/plugin/installer"
 
 import (
 	"archive/tar"
@@ -27,10 +27,10 @@ import (
 
 	"github.com/pkg/errors"
 
-	"helm.sh/helm/pkg/cli"
-	"helm.sh/helm/pkg/getter"
-	"helm.sh/helm/pkg/helmpath"
-	"helm.sh/helm/pkg/plugin/cache"
+	"helm.sh/helm/v3/pkg/cli"
+	"helm.sh/helm/v3/pkg/getter"
+	"helm.sh/helm/v3/pkg/helmpath"
+	"helm.sh/helm/v3/pkg/plugin/cache"
 )
 
 // HTTPInstaller installs plugins from an archive served by a web server.
@@ -79,18 +79,13 @@ func NewHTTPInstaller(source string) (*HTTPInstaller, error) {
 		return nil, err
 	}
 
-	getConstructor, err := getter.ByScheme("http", cli.EnvSettings{})
-	if err != nil {
-		return nil, err
-	}
-
-	get, err := getConstructor.New(getter.WithURL(source))
+	get, err := getter.All(new(cli.EnvSettings)).ByScheme("http")
 	if err != nil {
 		return nil, err
 	}
 
 	i := &HTTPInstaller{
-		CacheDir:   filepath.Join(helmpath.PluginCache(), key),
+		CacheDir:   helmpath.CachePath("plugins", key),
 		PluginName: stripPluginName(filepath.Base(source)),
 		base:       newBase(source),
 		extractor:  extractor,
@@ -157,7 +152,7 @@ func (i HTTPInstaller) Path() string {
 	if i.base.Source == "" {
 		return ""
 	}
-	return filepath.Join(helmpath.Plugins(), i.PluginName)
+	return helmpath.DataPath("plugins", i.PluginName)
 }
 
 // Extract extracts compressed archives
@@ -192,7 +187,7 @@ func (g *TarGzExtractor) Extract(buffer *bytes.Buffer, targetDir string) error {
 				return err
 			}
 		case tar.TypeReg:
-			outFile, err := os.Create(path)
+			outFile, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, os.FileMode(header.Mode))
 			if err != nil {
 				return err
 			}

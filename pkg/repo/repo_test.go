@@ -16,10 +16,12 @@ limitations under the License.
 
 package repo
 
-import "testing"
-import "io/ioutil"
-import "os"
-import "strings"
+import (
+	"io/ioutil"
+	"os"
+	"strings"
+	"testing"
+)
 
 const testRepositoriesFile = "testdata/repositories.yaml"
 
@@ -89,24 +91,41 @@ func TestNewFile(t *testing.T) {
 	}
 }
 
-func TestNewPreV1File(t *testing.T) {
-	r, err := LoadFile("testdata/old-repositories.yaml")
-	if err != nil && err != ErrRepoOutOfDate {
-		t.Fatal(err)
-	}
-	if len(r.Repositories) != 3 {
-		t.Fatalf("Expected 3 repos: %#v", r)
+func TestRepoFile_Get(t *testing.T) {
+	repo := NewFile()
+	repo.Add(
+		&Entry{
+			Name: "first",
+			URL:  "https://example.com/first",
+		},
+		&Entry{
+			Name: "second",
+			URL:  "https://example.com/second",
+		},
+		&Entry{
+			Name: "third",
+			URL:  "https://example.com/third",
+		},
+		&Entry{
+			Name: "fourth",
+			URL:  "https://example.com/fourth",
+		},
+	)
+
+	name := "second"
+
+	entry := repo.Get(name)
+	if entry == nil {
+		t.Fatalf("Expected repo entry %q to be found", name)
 	}
 
-	// Because they are parsed as a map, we lose ordering.
-	found := false
-	for _, rr := range r.Repositories {
-		if rr.Name == "best-charts-ever" {
-			found = true
-		}
+	if entry.URL != "https://example.com/second" {
+		t.Errorf("Expected repo URL to be %q but got %q", "https://example.com/second", entry.URL)
 	}
-	if !found {
-		t.Errorf("expected the best charts ever. Got %#v", r.Repositories)
+
+	entry = repo.Get("nonexistent")
+	if entry != nil {
+		t.Errorf("Got unexpected entry %+v", entry)
 	}
 }
 
@@ -184,7 +203,7 @@ func TestWriteFile(t *testing.T) {
 		t.Errorf("failed to create test-file (%v)", err)
 	}
 	defer os.Remove(file.Name())
-	if err := sampleRepository.WriteFile(file.Name(), 0744); err != nil {
+	if err := sampleRepository.WriteFile(file.Name(), 0644); err != nil {
 		t.Errorf("failed to write file (%v)", err)
 	}
 
@@ -200,10 +219,9 @@ func TestWriteFile(t *testing.T) {
 }
 
 func TestRepoNotExists(t *testing.T) {
-	_, err := LoadFile("/this/path/does/not/exist.yaml")
-	if err == nil {
+	if _, err := LoadFile("/this/path/does/not/exist.yaml"); err == nil {
 		t.Errorf("expected err to be non-nil when path does not exist")
-	} else if !strings.Contains(err.Error(), "You might need to run `helm init`") {
-		t.Errorf("expected prompt to run `helm init` when repositories file does not exist")
+	} else if !strings.Contains(err.Error(), "couldn't load repositories file") {
+		t.Errorf("expected prompt `couldn't load repositories file`")
 	}
 }

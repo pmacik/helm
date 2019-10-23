@@ -24,7 +24,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/cli-runtime/pkg/resource"
 
-	"helm.sh/helm/pkg/kube"
+	"helm.sh/helm/v3/pkg/kube"
 )
 
 // FailingKubeClient implements KubeClient for testing purposes. It also has
@@ -77,17 +77,17 @@ func (f *FailingKubeClient) WatchUntilReady(resources kube.ResourceList, d time.
 // Update returns the configured error if set or prints
 func (f *FailingKubeClient) Update(r, modified kube.ResourceList, ignoreMe bool) (*kube.Result, error) {
 	if f.UpdateError != nil {
-		return nil, f.UpdateError
+		return &kube.Result{}, f.UpdateError
 	}
 	return f.PrintingKubeClient.Update(r, modified, ignoreMe)
 }
 
 // Build returns the configured error if set or prints
-func (f *FailingKubeClient) Build(r io.Reader) (kube.ResourceList, error) {
+func (f *FailingKubeClient) Build(r io.Reader, _ bool) (kube.ResourceList, error) {
 	if f.BuildError != nil {
 		return []*resource.Info{}, f.BuildError
 	}
-	return f.PrintingKubeClient.Build(r)
+	return f.PrintingKubeClient.Build(r, false)
 }
 
 // WaitAndGetCompletedPodPhase returns the configured error if set or prints

@@ -21,17 +21,16 @@ import (
 
 	"github.com/gosuri/uitable"
 	"github.com/spf13/cobra"
-
-	"helm.sh/helm/pkg/helmpath"
 )
 
 func newPluginListCmd(out io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "list",
-		Short: "list installed Helm plugins",
+		Use:     "list",
+		Aliases: []string{"ls"},
+		Short:   "list installed Helm plugins",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			debug("pluginDirs: %s", helmpath.Plugins())
-			plugins, err := findPlugins(helmpath.Plugins())
+			debug("pluginDirs: %s", settings.PluginsDirectory)
+			plugins, err := findPlugins(settings.PluginsDirectory)
 			if err != nil {
 				return err
 			}

@@ -23,15 +23,16 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 
-	"helm.sh/helm/internal/test"
-	"helm.sh/helm/pkg/chartutil"
-	kubefake "helm.sh/helm/pkg/kube/fake"
-	"helm.sh/helm/pkg/release"
-	"helm.sh/helm/pkg/storage/driver"
+	"helm.sh/helm/v3/internal/test"
+	"helm.sh/helm/v3/pkg/chartutil"
+	kubefake "helm.sh/helm/v3/pkg/kube/fake"
+	"helm.sh/helm/v3/pkg/release"
+	"helm.sh/helm/v3/pkg/storage/driver"
 )
 
 type nameTemplateTestCase struct {
@@ -72,6 +73,41 @@ func TestInstallRelease(t *testing.T) {
 	is.NotEqual(len(rel.Manifest), 0)
 	is.Contains(rel.Manifest, "---\n# Source: hello/templates/hello\nhello: world")
 	is.Equal(rel.Info.Description, "Install complete")
+}
+
+func TestInstallReleaseWithValues(t *testing.T) {
+	is := assert.New(t)
+	instAction := installAction(t)
+	userVals := map[string]interface{}{
+		"nestedKey": map[string]interface{}{
+			"simpleKey": "simpleValue",
+		},
+	}
+	expectedUserValues := map[string]interface{}{
+		"nestedKey": map[string]interface{}{
+			"simpleKey": "simpleValue",
+		},
+	}
+	res, err := instAction.Run(buildChart(withSampleValues()), userVals)
+	if err != nil {
+		t.Fatalf("Failed install: %s", err)
+	}
+	is.Equal(res.Name, "test-install-release", "Expected release name.")
+	is.Equal(res.Namespace, "spaced")
+
+	rel, err := instAction.cfg.Releases.Get(res.Name, res.Version)
+	is.NoError(err)
+
+	is.Len(rel.Hooks, 1)
+	is.Equal(rel.Hooks[0].Manifest, manifestWithHook)
+	is.Equal(rel.Hooks[0].Events[0], release.HookPostInstall)
+	is.Equal(rel.Hooks[0].Events[1], release.HookPreDelete, "Expected event 0 is pre-delete")
+
+	is.NotEqual(len(res.Manifest), 0)
+	is.NotEqual(len(rel.Manifest), 0)
+	is.Contains(rel.Manifest, "---\n# Source: hello/templates/hello\nhello: world")
+	is.Equal("Install complete", rel.Info.Description)
+	is.Equal(expectedUserValues, rel.Config)
 }
 
 func TestInstallReleaseClientOnly(t *testing.T) {
@@ -140,7 +176,7 @@ func TestInstallRelease_WithNotesRendered(t *testing.T) {
 	is.Equal(rel.Info.Description, "Install complete")
 }
 
-func TestInstallRelease_WithChartAndDependencyNotes(t *testing.T) {
+func TestInstallRelease_WithChartAndDependencyParentNotes(t *testing.T) {
 	// Regression: Make sure that the child's notes don't override the parent's
 	is := assert.New(t)
 	instAction := installAction(t)
@@ -155,6 +191,28 @@ func TestInstallRelease_WithChartAndDependencyNotes(t *testing.T) {
 	is.Equal("with-notes", rel.Name)
 	is.NoError(err)
 	is.Equal("parent", rel.Info.Notes)
+	is.Equal(rel.Info.Description, "Install complete")
+}
+
+func TestInstallRelease_WithChartAndDependencyAllNotes(t *testing.T) {
+	// Regression: Make sure that the child's notes don't override the parent's
+	is := assert.New(t)
+	instAction := installAction(t)
+	instAction.ReleaseName = "with-notes"
+	instAction.SubNotes = true
+	vals := map[string]interface{}{}
+	res, err := instAction.Run(buildChart(withNotes("parent"), withDependency(withNotes("child"))), vals)
+	if err != nil {
+		t.Fatalf("Failed install: %s", err)
+	}
+
+	rel, err := instAction.cfg.Releases.Get(res.Name, res.Version)
+	is.Equal("with-notes", rel.Name)
+	is.NoError(err)
+	// test run can return as either 'parent\nchild' or 'child\nparent'
+	if !strings.Contains(rel.Info.Notes, "parent") && !strings.Contains(rel.Info.Notes, "child") {
+		t.Fatalf("Expected 'parent\nchild' or 'child\nparent', got '%s'", rel.Info.Notes)
+	}
 	is.Equal(rel.Info.Description, "Install complete")
 }
 

@@ -24,13 +24,18 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/cli-runtime/pkg/resource"
 
-	"helm.sh/helm/pkg/kube"
+	"helm.sh/helm/v3/pkg/kube"
 )
 
 // PrintingKubeClient implements KubeClient, but simply prints the reader to
 // the given output.
 type PrintingKubeClient struct {
 	Out io.Writer
+}
+
+// isReachable checks if the cluster is reachable
+func (p *PrintingKubeClient) IsReachable() error {
+	return nil
 }
 
 // Create prints the values of what would be created with a real KubeClient.
@@ -77,7 +82,7 @@ func (p *PrintingKubeClient) Update(_, modified kube.ResourceList, _ bool) (*kub
 }
 
 // Build implements KubeClient Build.
-func (p *PrintingKubeClient) Build(_ io.Reader) (kube.ResourceList, error) {
+func (p *PrintingKubeClient) Build(_ io.Reader, _ bool) (kube.ResourceList, error) {
 	return []*resource.Info{}, nil
 }
 

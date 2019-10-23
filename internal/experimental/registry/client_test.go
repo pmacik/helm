@@ -36,7 +36,7 @@ import (
 	"github.com/stretchr/testify/suite"
 	"golang.org/x/crypto/bcrypt"
 
-	"helm.sh/helm/pkg/chart"
+	"helm.sh/helm/v3/pkg/chart"
 )
 
 var (
@@ -124,11 +124,17 @@ func (suite *RegistryClientTestSuite) TearDownSuite() {
 }
 
 func (suite *RegistryClientTestSuite) Test_0_Login() {
-	err := suite.RegistryClient.Login(suite.DockerRegistryHost, "badverybad", "ohsobad")
+	err := suite.RegistryClient.Login(suite.DockerRegistryHost, "badverybad", "ohsobad", false)
 	suite.NotNil(err, "error logging into registry with bad credentials")
 
-	err = suite.RegistryClient.Login(suite.DockerRegistryHost, testUsername, testPassword)
+	err = suite.RegistryClient.Login(suite.DockerRegistryHost, "badverybad", "ohsobad", true)
+	suite.NotNil(err, "error logging into registry with bad credentials, insecure mode")
+
+	err = suite.RegistryClient.Login(suite.DockerRegistryHost, testUsername, testPassword, false)
 	suite.Nil(err, "no error logging into registry with good credentials")
+
+	err = suite.RegistryClient.Login(suite.DockerRegistryHost, testUsername, testPassword, true)
+	suite.Nil(err, "no error logging into registry with good credentials, insecure mode")
 }
 
 func (suite *RegistryClientTestSuite) Test_1_SaveChart() {

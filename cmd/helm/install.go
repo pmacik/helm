@@ -24,14 +24,15 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
-	"helm.sh/helm/cmd/helm/require"
-	"helm.sh/helm/pkg/action"
-	"helm.sh/helm/pkg/chart"
-	"helm.sh/helm/pkg/chart/loader"
-	"helm.sh/helm/pkg/cli/values"
-	"helm.sh/helm/pkg/downloader"
-	"helm.sh/helm/pkg/getter"
-	"helm.sh/helm/pkg/release"
+	"helm.sh/helm/v3/cmd/helm/require"
+	"helm.sh/helm/v3/pkg/action"
+	"helm.sh/helm/v3/pkg/chart"
+	"helm.sh/helm/v3/pkg/chart/loader"
+	"helm.sh/helm/v3/pkg/cli/output"
+	"helm.sh/helm/v3/pkg/cli/values"
+	"helm.sh/helm/v3/pkg/downloader"
+	"helm.sh/helm/v3/pkg/getter"
+	"helm.sh/helm/v3/pkg/release"
 )
 
 const installDesc = `
@@ -42,7 +43,9 @@ a path to an unpacked chart directory or a URL.
 
 To override values in a chart, use either the '--values' flag and pass in a file
 or use the '--set' flag and pass configuration from the command line, to force
-a string value use '--set-string'.
+a string value use '--set-string'. In case a value is large and therefore
+you want not to use neither '--values' nor '--set', use '--set-file' to read the
+single large value from file.
 
 	$ helm install -f myvalues.yaml myredis ./redis
 
@@ -53,6 +56,9 @@ or
 or
 
 	$ helm install --set-string long_int=1234567890 myredis ./redis
+
+or
+	$ helm install --set-file my_script=dothings.sh myredis ./redis
 
 You can specify the '--values'/'-f' flag multiple times. The priority will be given to the
 last (right-most) file specified. For example, if both myvalues.yaml and override.yaml
@@ -68,23 +74,22 @@ set for a key called 'foo', the 'newbar' value would take precedence:
 
 
 To check the generated manifests of a release without installing the chart,
-the '--debug' and '--dry-run' flags can be combined. This will still require a
-round-trip to the Tiller server.
+the '--debug' and '--dry-run' flags can be combined.
 
 If --verify is set, the chart MUST have a provenance file, and the provenance
 file MUST pass all verification steps.
 
 There are five different ways you can express the chart you want to install:
 
-1. By chart reference: helm install example/mariadb
-2. By path to a packaged chart: helm install ./nginx-1.2.3.tgz
-3. By path to an unpacked chart directory: helm install ./nginx
-4. By absolute URL: helm install https://example.com/charts/nginx-1.2.3.tgz
-5. By chart reference and repo url: helm install --repo https://example.com/charts/ nginx
+1. By chart reference: helm install mymaria example/mariadb
+2. By path to a packaged chart: helm install mynginx ./nginx-1.2.3.tgz
+3. By path to an unpacked chart directory: helm install mynginx ./nginx
+4. By absolute URL: helm install mynginx https://example.com/charts/nginx-1.2.3.tgz
+5. By chart reference and repo url: helm install --repo https://example.com/charts/ mynginx nginx
 
 CHART REFERENCES
 
-A chart reference is a convenient way of reference a chart in a chart repository.
+A chart reference is a convenient way of referencing a chart in a chart repository.
 
 When you use a chart reference with a repo prefix ('example/mariadb'), Helm will look in the local
 configuration for a chart repository named 'example', and will then look for a
@@ -99,6 +104,7 @@ charts in a repository, use 'helm search'.
 func newInstallCmd(cfg *action.Configuration, out io.Writer) *cobra.Command {
 	client := action.NewInstall(cfg)
 	valueOpts := &values.Options{}
+	var outfmt output.Format
 
 	cmd := &cobra.Command{
 		Use:   "install [NAME] [CHART]",
@@ -110,12 +116,13 @@ func newInstallCmd(cfg *action.Configuration, out io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			action.PrintRelease(out, rel)
-			return nil
+
+			return outfmt.Write(out, &statusPrinter{rel, settings.Debug})
 		},
 	}
 
 	addInstallFlags(cmd.Flags(), client, valueOpts)
+	bindOutputFlag(cmd, &outfmt)
 
 	return cmd
 }
@@ -128,30 +135,13 @@ func addInstallFlags(f *pflag.FlagSet, client *action.Install, valueOpts *values
 	f.BoolVar(&client.Wait, "wait", false, "if set, will wait until all Pods, PVCs, Services, and minimum number of Pods of a Deployment, StatefulSet, or ReplicaSet are in a ready state before marking the release as successful. It will wait for as long as --timeout")
 	f.BoolVarP(&client.GenerateName, "generate-name", "g", false, "generate the name (and omit the NAME parameter)")
 	f.StringVar(&client.NameTemplate, "name-template", "", "specify template used to name the release")
-	f.BoolVar(&client.Devel, "devel", false, "use development versions, too. Equivalent to version '>0.0.0-0'. If --version is set, this is ignored.")
+	f.BoolVar(&client.Devel, "devel", false, "use development versions, too. Equivalent to version '>0.0.0-0'. If --version is set, this is ignored")
 	f.BoolVar(&client.DependencyUpdate, "dependency-update", false, "run helm dependency update before installing the chart")
 	f.BoolVar(&client.Atomic, "atomic", false, "if set, installation process purges chart on fail. The --wait flag will be set automatically if --atomic is used")
-	f.BoolVar(&client.SkipCRDs, "skip-crds", false, "if set, no CRDs will be installed. By default, CRDs are installed if not already present.")
+	f.BoolVar(&client.SkipCRDs, "skip-crds", false, "if set, no CRDs will be installed. By default, CRDs are installed if not already present")
+	f.BoolVar(&client.SubNotes, "render-subchart-notes", false, "if set, render subchart notes along with the parent")
 	addValueOptionsFlags(f, valueOpts)
 	addChartPathOptionsFlags(f, &client.ChartPathOptions)
-}
-
-func addValueOptionsFlags(f *pflag.FlagSet, v *values.Options) {
-	f.StringSliceVarP(&v.ValueFiles, "values", "f", []string{}, "specify values in a YAML file or a URL(can specify multiple)")
-	f.StringArrayVar(&v.Values, "set", []string{}, "set values on the command line (can specify multiple or separate values with commas: key1=val1,key2=val2)")
-	f.StringArrayVar(&v.StringValues, "set-string", []string{}, "set STRING values on the command line (can specify multiple or separate values with commas: key1=val1,key2=val2)")
-}
-
-func addChartPathOptionsFlags(f *pflag.FlagSet, c *action.ChartPathOptions) {
-	f.StringVar(&c.Version, "version", "", "specify the exact chart version to install. If this is not specified, the latest version is installed")
-	f.BoolVar(&c.Verify, "verify", false, "verify the package before installing it")
-	f.StringVar(&c.Keyring, "keyring", defaultKeyring(), "location of public keys used for verification")
-	f.StringVar(&c.RepoURL, "repo", "", "chart repository url where to locate the requested chart")
-	f.StringVar(&c.Username, "username", "", "chart repository username where to locate the requested chart")
-	f.StringVar(&c.Password, "password", "", "chart repository password where to locate the requested chart")
-	f.StringVar(&c.CertFile, "cert-file", "", "identify HTTPS client using this SSL certificate file")
-	f.StringVar(&c.KeyFile, "key-file", "", "identify HTTPS client using this SSL key file")
-	f.StringVar(&c.CaFile, "ca-file", "", "verify certificates of HTTPS-enabled servers using this CA bundle")
 }
 
 func runInstall(args []string, client *action.Install, valueOpts *values.Options, out io.Writer) (*release.Release, error) {
@@ -174,7 +164,8 @@ func runInstall(args []string, client *action.Install, valueOpts *values.Options
 
 	debug("CHART PATH: %s\n", cp)
 
-	vals, err := valueOpts.MergeValues(settings)
+	p := getter.All(settings)
+	vals, err := valueOpts.MergeValues(p)
 	if err != nil {
 		return nil, err
 	}
@@ -197,11 +188,13 @@ func runInstall(args []string, client *action.Install, valueOpts *values.Options
 		if err := action.CheckDependencies(chartRequested, req); err != nil {
 			if client.DependencyUpdate {
 				man := &downloader.Manager{
-					Out:        out,
-					ChartPath:  cp,
-					Keyring:    client.ChartPathOptions.Keyring,
-					SkipUpdate: false,
-					Getters:    getter.All(settings),
+					Out:              out,
+					ChartPath:        cp,
+					Keyring:          client.ChartPathOptions.Keyring,
+					SkipUpdate:       false,
+					Getters:          p,
+					RepositoryConfig: settings.RepositoryConfig,
+					RepositoryCache:  settings.RepositoryCache,
 				}
 				if err := man.Update(); err != nil {
 					return nil, err
@@ -212,7 +205,7 @@ func runInstall(args []string, client *action.Install, valueOpts *values.Options
 		}
 	}
 
-	client.Namespace = getNamespace()
+	client.Namespace = settings.Namespace()
 	return client.Run(chartRequested, vals)
 }
 

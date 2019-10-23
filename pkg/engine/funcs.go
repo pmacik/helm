@@ -23,8 +23,8 @@ import (
 	"text/template"
 
 	"github.com/BurntSushi/toml"
-	"github.com/Masterminds/sprig"
-	yaml "gopkg.in/yaml.v2"
+	"github.com/Masterminds/sprig/v3"
+	"sigs.k8s.io/yaml"
 )
 
 // funcMap returns a mapping of all of the functions that Engine has.

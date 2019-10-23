@@ -19,15 +19,18 @@ package main
 import (
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/gosuri/uitable"
 	"github.com/spf13/cobra"
 
-	"helm.sh/helm/cmd/helm/require"
-	"helm.sh/helm/pkg/action"
-	"helm.sh/helm/pkg/chart"
-	"helm.sh/helm/pkg/release"
-	"helm.sh/helm/pkg/releaseutil"
+	"helm.sh/helm/v3/cmd/helm/require"
+	"helm.sh/helm/v3/pkg/action"
+	"helm.sh/helm/v3/pkg/chart"
+	"helm.sh/helm/v3/pkg/cli/output"
+	"helm.sh/helm/v3/pkg/release"
+	"helm.sh/helm/v3/pkg/releaseutil"
+	helmtime "helm.sh/helm/v3/pkg/time"
 )
 
 var historyHelp = `
@@ -48,6 +51,7 @@ The historical release set is printed as a formatted table, e.g:
 
 func newHistoryCmd(cfg *action.Configuration, out io.Writer) *cobra.Command {
 	client := action.NewHistory(cfg)
+	var outfmt output.Format
 
 	cmd := &cobra.Command{
 		Use:     "history RELEASE_NAME",
@@ -60,51 +64,50 @@ func newHistoryCmd(cfg *action.Configuration, out io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintln(out, history)
-			return nil
+
+			return outfmt.Write(out, history)
 		},
 	}
 
 	f := cmd.Flags()
-	f.StringVarP(&client.OutputFormat, "output", "o", action.Table.String(), "prints the output in the specified format (json|table|yaml)")
 	f.IntVar(&client.Max, "max", 256, "maximum number of revision to include in history")
+	bindOutputFlag(cmd, &outfmt)
 
 	return cmd
 }
 
 type releaseInfo struct {
-	Revision    int    `json:"revision"`
-	Updated     string `json:"updated"`
-	Status      string `json:"status"`
-	Chart       string `json:"chart"`
-	AppVersion  string `json:"app_version"`
-	Description string `json:"description"`
+	Revision    int           `json:"revision"`
+	Updated     helmtime.Time `json:"updated"`
+	Status      string        `json:"status"`
+	Chart       string        `json:"chart"`
+	AppVersion  string        `json:"app_version"`
+	Description string        `json:"description"`
 }
 
 type releaseHistory []releaseInfo
 
-func marshalHistory(format action.OutputFormat, hist releaseHistory) (byt []byte, err error) {
-	switch format {
-	case action.YAML, action.JSON:
-		byt, err = format.Marshal(hist)
-	case action.Table:
-		byt, err = format.MarshalTable(func(tbl *uitable.Table) {
-			tbl.AddRow("REVISION", "UPDATED", "STATUS", "CHART", "APP VERSION", "DESCRIPTION")
-			for i := 0; i <= len(hist)-1; i++ {
-				r := hist[i]
-				tbl.AddRow(r.Revision, r.Updated, r.Status, r.Chart, r.AppVersion, r.Description)
-			}
-		})
-	default:
-		err = action.ErrInvalidFormatType
-	}
-	return
+func (r releaseHistory) WriteJSON(out io.Writer) error {
+	return output.EncodeJSON(out, r)
 }
 
-func getHistory(client *action.History, name string) (string, error) {
+func (r releaseHistory) WriteYAML(out io.Writer) error {
+	return output.EncodeYAML(out, r)
+}
+
+func (r releaseHistory) WriteTable(out io.Writer) error {
+	tbl := uitable.New()
+	tbl.AddRow("REVISION", "UPDATED", "STATUS", "CHART", "APP VERSION", "DESCRIPTION")
+	for _, item := range r {
+		tbl.AddRow(item.Revision, item.Updated.Format(time.ANSIC), item.Status, item.Chart, item.AppVersion, item.Description)
+	}
+	return output.EncodeTable(out, tbl)
+}
+
+func getHistory(client *action.History, name string) (releaseHistory, error) {
 	hist, err := client.Run(name)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	releaseutil.Reverse(hist, releaseutil.SortByRevision)
@@ -115,21 +118,12 @@ func getHistory(client *action.History, name string) (string, error) {
 	}
 
 	if len(rels) == 0 {
-		return "", nil
+		return releaseHistory{}, nil
 	}
 
 	releaseHistory := getReleaseHistory(rels)
 
-	outputFormat, err := action.ParseOutputFormat(client.OutputFormat)
-	if err != nil {
-		return "", err
-	}
-	history, formattingError := marshalHistory(outputFormat, releaseHistory)
-	if formattingError != nil {
-		return "", formattingError
-	}
-
-	return string(history), nil
+	return releaseHistory, nil
 }
 
 func getReleaseHistory(rls []*release.Release) (history releaseHistory) {
@@ -149,7 +143,7 @@ func getReleaseHistory(rls []*release.Release) (history releaseHistory) {
 			Description: d,
 		}
 		if !r.Info.LastDeployed.IsZero() {
-			rInfo.Updated = r.Info.LastDeployed.String()
+			rInfo.Updated = r.Info.LastDeployed
 
 		}
 		history = append(history, rInfo)

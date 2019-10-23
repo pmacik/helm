@@ -28,8 +28,8 @@ import (
 
 	"github.com/pkg/errors"
 
-	"helm.sh/helm/pkg/chart"
-	"helm.sh/helm/pkg/chartutil"
+	"helm.sh/helm/v3/pkg/chart"
+	"helm.sh/helm/v3/pkg/chartutil"
 )
 
 // Engine is an implementation of 'cmd/tiller/environment'.Engine that uses Go templates.
@@ -223,11 +223,7 @@ func (e Engine) renderWithReferences(tpls, referenceTpls map[string]renderable) 
 		// Work around the issue where Go will emit "<no value>" even if Options(missing=zero)
 		// is set. Since missing=error will never get here, we do not need to handle
 		// the Strict case.
-		f := &chart.File{
-			Name: strings.ReplaceAll(filename, "/templates", "/manifests"),
-			Data: []byte(strings.ReplaceAll(buf.String(), "<no value>", "")),
-		}
-		rendered[filename] = string(f.Data)
+		rendered[filename] = strings.ReplaceAll(buf.String(), "<no value>", "")
 	}
 
 	return rendered, nil

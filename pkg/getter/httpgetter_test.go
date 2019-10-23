@@ -24,9 +24,9 @@ import (
 	"strings"
 	"testing"
 
-	"helm.sh/helm/internal/test"
-	"helm.sh/helm/internal/version"
-	"helm.sh/helm/pkg/cli"
+	"helm.sh/helm/v3/internal/test"
+	"helm.sh/helm/v3/internal/version"
+	"helm.sh/helm/v3/pkg/cli"
 )
 
 func TestHTTPGetter(t *testing.T) {
@@ -104,16 +104,11 @@ func TestDownload(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	provider, err := ByScheme("http", cli.EnvSettings{})
-	if err != nil {
-		t.Fatal("No http provider found")
-	}
-
-	g, err := provider.New(WithURL(srv.URL))
+	g, err := All(new(cli.EnvSettings)).ByScheme("http")
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := g.Get(srv.URL)
+	got, err := g.Get(srv.URL, WithURL(srv.URL))
 	if err != nil {
 		t.Fatal(err)
 	}

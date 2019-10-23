@@ -23,10 +23,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"helm.sh/helm/cmd/helm/require"
-	"helm.sh/helm/pkg/chart"
-	"helm.sh/helm/pkg/chartutil"
-	"helm.sh/helm/pkg/helmpath"
+	"helm.sh/helm/v3/cmd/helm/require"
+	"helm.sh/helm/v3/pkg/chart"
+	"helm.sh/helm/v3/pkg/chartutil"
+	"helm.sh/helm/v3/pkg/helmpath"
 )
 
 const createDesc = `
@@ -36,12 +36,13 @@ directories used in a chart.
 For example, 'helm create foo' will create a directory structure that looks
 something like this:
 
-	foo/
-	├── .helmignore   # Contains patterns to ignore when packaging Helm charts.
-	├── Chart.yaml    # Information about your chart
-	├── values.yaml   # The default values for your templates
-	├── charts/       # Charts that this chart depends on
-	└── templates/    # The template files
+    foo/
+    ├── .helmignore   # Contains patterns to ignore when packaging Helm charts.
+    ├── Chart.yaml    # Information about your chart
+    ├── values.yaml   # The default values for your templates
+    ├── charts/       # Charts that this chart depends on
+    └── templates/    # The template files
+        └── tests/    # The test files
 
 'helm create' takes a path for an argument. If directories in the given path
 do not exist, Helm will attempt to create them as it goes. If the given
@@ -50,8 +51,9 @@ will be overwritten, but other files will be left alone.
 `
 
 type createOptions struct {
-	starter string // --starter
-	name    string
+	starter    string // --starter
+	name       string
+	starterDir string
 }
 
 func newCreateCmd(out io.Writer) *cobra.Command {
@@ -64,6 +66,7 @@ func newCreateCmd(out io.Writer) *cobra.Command {
 		Args:  require.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			o.name = args[0]
+			o.starterDir = helmpath.DataPath("starters")
 			return o.run(out)
 		},
 	}
@@ -87,7 +90,7 @@ func (o *createOptions) run(out io.Writer) error {
 
 	if o.starter != "" {
 		// Create from the starter
-		lstarter := filepath.Join(helmpath.Starters(), o.starter)
+		lstarter := filepath.Join(o.starterDir, o.starter)
 		// If path is absolute, we dont want to prefix it with helm starters folder
 		if filepath.IsAbs(o.starter) {
 			lstarter = o.starter
