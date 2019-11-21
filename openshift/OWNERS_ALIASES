@@ -1,0 +1,9 @@
+aliases:
+  helm-approvers:
+  - pmacik
+  - ldimaggi
+  - sbose78
+  helm-reviewers:
+  - pmacik
+  - ldimaggi
+  - sbose78
