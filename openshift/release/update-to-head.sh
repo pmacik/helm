@@ -13,7 +13,7 @@ git checkout upstream/master -B release-next
 
 # Update downstream's master and take all needed files from there.
 git fetch downstream master # get downstream/master
-git checkout downstream/master openshift # extract openshift directory from downstream/master
+git pull -r downstream master # get the downstream updates on top of master
 git mv -f openshift/OWNERS_ALIASES openshift/OWNERS . # (re)place OWNERS* files in the current workspace
 git rm -rf openshift/release # remove files unnecessary for release
 git add openshift/Dockerfile.tests openshift/Makefile OWNERS_ALIASES OWNERS # add the openshift directory and the OWNERS* to the release-next branch
