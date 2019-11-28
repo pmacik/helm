@@ -6,4 +6,6 @@ ENV GIT_COMMITTER_EMAIL devtools@redhat.com
 
 WORKDIR /go/src/github.com/redhat-developer/helm
 
+USER 1001
+
 COPY . .
